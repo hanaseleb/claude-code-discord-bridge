@@ -1,6 +1,6 @@
 """Persistent, runtime-mutable backend/model selection.
 
-Reads and writes the current backend (claude/codex) and per-backend
+Reads and writes the current backend (claude/codex/zai) and per-backend
 model preference to ``SettingsRepository`` (sqlite key-value store).
 
 Resolution order for any field:
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Valid backend names. Keep in sync with claude_code_core.backend.create_backend().
-ALL_BACKENDS = ("claude", "codex")
+ALL_BACKENDS = ("claude", "codex", "zai")
 
 # Settings keys
 BACKEND_GLOBAL = "backend.global"
@@ -64,12 +64,14 @@ class BackendSettings:
         env_backend: str,
         env_model_for_claude: str,
         env_model_for_codex: str,
+        env_model_for_zai: str = "",
     ) -> None:
         self.repo = repo
         self._env_backend = env_backend if env_backend in ALL_BACKENDS else "claude"
         self._env_model = {
             "claude": env_model_for_claude or "",
             "codex": env_model_for_codex or "",
+            "zai": env_model_for_zai or "",
         }
 
     # ── Resolution ──────────────────────────────────────────

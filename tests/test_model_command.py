@@ -190,6 +190,18 @@ class TestModelAutocomplete:
         # No Claude models leaked in.
         assert "sonnet" not in values
 
+    async def test_zai_backend_suggests_glm_models(self) -> None:
+        settings = await _settings()
+        await settings.set_backend("zai")
+        cog = _make_cog(settings)
+
+        choices = await cog._model_name_autocomplete(_channel_interaction(), "")
+
+        values = {c.value for c in choices}
+        assert {"glm-5.2[1m]", "glm-5.2", "glm-5-turbo", "glm-4.7"} <= values
+        assert "sonnet" not in values
+        assert not any(v.startswith("gpt-") for v in values)
+
     async def test_codex_backend_suggests_latest_codex_model_first(self) -> None:
         settings = await _settings()
         await settings.set_backend("codex")

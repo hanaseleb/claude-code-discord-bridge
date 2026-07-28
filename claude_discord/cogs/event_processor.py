@@ -995,12 +995,12 @@ async def _post_engine_status_footer(
     # Render the Claude statusLine on Claude turns, or whenever the Codex line
     # is being shown (so both engines appear together). On non-Claude turns the
     # session model id is not a Claude model, so suppress the model label.
-    render_claude_sl = backend == "claude" or codex_line is not None
+    render_claude_sl = backend in {"claude", "zai"} or codex_line is not None
     statusline_text: str | None = None
     if render_claude_sl:
         statusline_text = await _render_claude_statusline_text(
             working_dir,
-            model if backend == "claude" else "",
+            model if backend in {"claude", "zai"} else "",
             context_window,
             input_tokens,
             cache_creation_tokens,
@@ -1008,7 +1008,7 @@ async def _post_engine_status_footer(
         )
 
     parts: list[str] = []
-    if api_label and backend == "claude":
+    if api_label and backend in {"claude", "zai"}:
         parts.append(f"\U0001f517 API: {api_label}")
     if statusline_text:
         parts.append(statusline_text)

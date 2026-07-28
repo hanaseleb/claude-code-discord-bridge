@@ -7,6 +7,7 @@ CCDB_API_URL is injected into the subprocess environment.
 from __future__ import annotations
 
 from claude_code_core.runner import ClaudeRunner
+from claude_code_core.zai_runner import ZaiRunner
 from claude_discord.backend_factory import BackendFactory
 
 
@@ -69,3 +70,20 @@ class TestFactoryApiPort:
         assert runner.api_port == 8099
         env = runner._build_env()
         assert env["CCDB_API_URL"] == "http://127.0.0.1:8099"
+
+    def test_zai_backend_uses_claude_command_and_dedicated_env(self, tmp_path) -> None:
+        env_file = tmp_path / "zai.env"
+        env_file.write_text("ANTHROPIC_AUTH_TOKEN=test-key\n")
+        factory = _factory(
+            api_port=8099,
+            zai_env_file=str(env_file),
+            zai_model="glm-5.2[1m]",
+        )
+
+        runner = factory.build(backend="zai")
+
+        assert isinstance(runner, ZaiRunner)
+        assert runner.command == "claude"
+        assert runner.model == "glm-5.2[1m]"
+        assert runner.api_port == 8099
+        assert runner._build_env()["ANTHROPIC_AUTH_TOKEN"] == "test-key"

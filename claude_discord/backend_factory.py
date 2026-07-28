@@ -26,8 +26,12 @@ logger = logging.getLogger(__name__)
 # ``--model`` entirely so the Codex CLI uses its own default (the ``model``
 # key in ~/.codex/config.toml, currently gpt-5.6-sol). Hard-coding a version
 # here only goes stale as the Codex console default moves.
-DEFAULT_MODEL: dict[str, str | None] = {"claude": "sonnet", "codex": None}
-DEFAULT_COMMAND = {"claude": "claude", "codex": "codex"}
+DEFAULT_MODEL: dict[str, str | None] = {
+    "claude": "sonnet",
+    "codex": None,
+    "zai": "glm-5.2[1m]",
+}
+DEFAULT_COMMAND = {"claude": "claude", "codex": "codex", "zai": "claude"}
 
 
 class BackendFactory:
@@ -47,6 +51,8 @@ class BackendFactory:
         effort: str | None,
         api_port: int | None = None,
         api_secret: str | None = None,
+        zai_env_file: str | None = None,
+        zai_model: str | None = None,
     ) -> None:
         self.claude_command = claude_command or DEFAULT_COMMAND["claude"]
         self.codex_command = codex_command or DEFAULT_COMMAND["codex"]
@@ -59,12 +65,16 @@ class BackendFactory:
         self.effort = effort
         self.api_port = api_port
         self.api_secret = api_secret
+        self.zai_env_file = zai_env_file
+        self.zai_model = zai_model or DEFAULT_MODEL["zai"]
 
     def command_for(self, backend: str) -> str:
         if backend == "claude":
             return self.claude_command
         if backend == "codex":
             return self.codex_command
+        if backend == "zai":
+            return self.claude_command
         raise ValueError(f"Unknown backend: {backend!r}")
 
     def default_model_for(self, backend: str) -> str | None:
@@ -73,6 +83,8 @@ class BackendFactory:
         ``None`` (codex) means "do not pass ``--model``" so the Codex CLI uses
         its own configured default.
         """
+        if backend == "zai":
+            return self.zai_model
         return DEFAULT_MODEL.get(backend, DEFAULT_MODEL["claude"])
 
     def build(
@@ -99,11 +111,13 @@ class BackendFactory:
         # defaults. We deliberately do NOT forward them to Codex: Codex effort
         # is resolved per-backend from BackendSettings at spawn time (and its
         # valid values differ — e.g. Claude's "max" is not a Codex level).
-        if backend == "claude":
+        if backend in {"claude", "zai"}:
             if self.append_system_prompt is not None:
                 kwargs["append_system_prompt"] = self.append_system_prompt
             if self.effort is not None:
                 kwargs["effort"] = self.effort
+        if backend == "zai":
+            kwargs["env_file"] = self.zai_env_file
         if self.api_port is not None:
             kwargs["api_port"] = self.api_port
         if self.api_secret is not None:

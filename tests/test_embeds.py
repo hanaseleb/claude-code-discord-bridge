@@ -6,10 +6,20 @@ from claude_discord.claude.types import ToolCategory, ToolUseEvent
 from claude_discord.discord_ui.embeds import (
     redacted_thinking_embed,
     session_complete_embed,
+    session_start_embed,
     thinking_embed,
     tool_result_embed,
     tool_use_embed,
 )
+
+
+def test_zai_session_embed_has_distinct_backend_title() -> None:
+    embed = session_start_embed(backend="zai", model="glm-5.2[1m]")
+
+    assert embed.title is not None
+    assert "Z.ai GLM" in embed.title
+    assert embed.footer is not None
+    assert "glm-5.2[1m]" in embed.footer.text
 
 
 class TestThinkingEmbed:

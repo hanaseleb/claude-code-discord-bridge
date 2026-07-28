@@ -19,6 +19,7 @@ import signal
 import sys
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from typing import Any
 
 from .api_provider import detect_api_provider
 from .parser import parse_line
@@ -71,6 +72,8 @@ def _resolve_windows_cmd(cmd_path: Path) -> list[str] | None:
 
 class ClaudeRunner:
     """Manages Claude Code CLI subprocess execution."""
+
+    backend_name = "claude"
 
     def __init__(
         self,
@@ -177,7 +180,7 @@ class ClaudeRunner:
         effort: str | None | object = _UNSET,
     ) -> ClaudeRunner:
         """Create a fresh runner with the same configuration but no active process."""
-        return ClaudeRunner(
+        return type(self)(
             command=self.command,
             model=model if model is not None else self.model,
             permission_mode=self.permission_mode,
@@ -202,7 +205,12 @@ class ClaudeRunner:
             effort=(
                 self.effort if effort is _UNSET else effort  # type: ignore[arg-type]
             ),
+            **self._clone_extra_kwargs(),
         )
+
+    def _clone_extra_kwargs(self) -> dict[str, Any]:
+        """Constructor kwargs required by subclasses when cloning."""
+        return {}
 
     async def inject_tool_result(self, request_id: str, data: dict) -> None:
         """Send a tool result or permission/elicitation response via stdin."""
@@ -333,8 +341,23 @@ class ClaudeRunner:
             "DISCORD_BOT_TOKEN",
             "DISCORD_TOKEN",
             "API_SECRET_KEY",
+            "CCDB_ZAI_ENV_FILE",
         }
     )
+
+    @staticmethod
+    def _merge_env_file(env: dict[str, str], path: str | None) -> None:
+        """Merge a simple KEY=VALUE file into *env* without logging values."""
+        if not path:
+            return
+        try:
+            for line in Path(path).read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
+                    env[key] = value
+        except OSError:
+            logger.debug("CLI env overlay file not found: %s", path)
 
     def _build_env(self) -> dict[str, str]:
         """Build environment variables for the subprocess.
@@ -344,15 +367,7 @@ class ClaudeRunner:
         """
         env = {k: v for k, v in os.environ.items() if k not in self._STRIPPED_ENV_KEYS}
         overlay_path = os.environ.get("CCDB_CLI_ENV_FILE")
-        if overlay_path:
-            try:
-                for line in Path(overlay_path).read_text().splitlines():
-                    line = line.strip()
-                    if line and not line.startswith("#") and "=" in line:
-                        key, value = line.split("=", 1)
-                        env[key] = value
-            except OSError:
-                logger.debug("CLI env overlay file not found: %s", overlay_path)
+        self._merge_env_file(env, overlay_path)
         if self.api_port is not None:
             env["CCDB_API_URL"] = f"http://127.0.0.1:{self.api_port}"
         if self.api_secret is not None:

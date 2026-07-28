@@ -61,6 +61,7 @@ from .types import (
     ToolCategory,
     ToolUseEvent,
 )
+from .zai_runner import ZaiRunner
 
 __all__ = [
     # Types
@@ -88,6 +89,7 @@ __all__ = [
     "parse_codex_line",
     # Runner
     "ClaudeRunner",
+    "ZaiRunner",
     # Database
     "LoungeMessage",
     "LoungeRepository",
