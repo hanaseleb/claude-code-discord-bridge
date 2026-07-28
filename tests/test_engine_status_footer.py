@@ -58,6 +58,12 @@ async def _run(*, backend: str, mode: str, codex_line, statusline) -> str | None
 
 
 class TestGating:
+    async def test_zai_turn_shows_zai_api_and_claude_statusline(self) -> None:
+        body = await _run(backend="zai", mode="off", codex_line=None, statusline="Ctx 1%")
+        assert body is not None
+        assert "API:" in body
+        assert "Ctx 1%" in body
+
     async def test_off_claude_turn_shows_only_claude(self) -> None:
         body = await _run(
             backend="claude", mode="off", codex_line="🤖 Codex: x", statusline="Ctx 4%"

@@ -16,8 +16,6 @@ from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
 
-from claude_code_core.backend import create_backend
-
 from .bot import ClaudeDiscordBot
 from .cog_loader import load_custom_cogs
 from .setup import setup_bridge
@@ -45,10 +43,14 @@ def load_config() -> dict[str, str]:
         return os.getenv(new) or os.getenv(old, default)
 
     backend = os.getenv("CCDB_BACKEND", "claude")
-    # Default model is backend-specific: Claude needs an explicit alias
-    # ("sonnet"), but Codex defers to its own config.toml default when left
-    # empty (so we never pin a stale Codex model version).
-    default_model = "" if backend == "codex" else "sonnet"
+    # Defaults are backend-specific. Codex defers to config.toml; Z.ai uses
+    # its own model setting and must never inherit CLAUDE_MODEL.
+    if backend == "codex":
+        model = _env("CCDB_MODEL", "CLAUDE_MODEL", "")
+    elif backend == "zai":
+        model = os.getenv("CCDB_MODEL") or os.getenv("CCDB_ZAI_MODEL", "glm-5.2[1m]")
+    else:
+        model = _env("CCDB_MODEL", "CLAUDE_MODEL", "sonnet")
 
     return {
         "token": token,
@@ -59,7 +61,9 @@ def load_config() -> dict[str, str]:
         # the user switches backend at runtime via /backend.
         "claude_command": _env("CCDB_CLAUDE_COMMAND", "CLAUDE_COMMAND", ""),
         "codex_command": os.getenv("CCDB_CODEX_COMMAND", ""),
-        "model": _env("CCDB_MODEL", "CLAUDE_MODEL", default_model),
+        "model": model,
+        "zai_env_file": os.getenv("CCDB_ZAI_ENV_FILE", ""),
+        "zai_model": os.getenv("CCDB_ZAI_MODEL", "glm-5.2[1m]"),
         "permission_mode": _env("CCDB_PERMISSION_MODE", "CLAUDE_PERMISSION_MODE", "acceptEdits"),
         "working_dir": _env("CCDB_WORKING_DIR", "CLAUDE_WORKING_DIR", ""),
         "dangerously_skip_permissions": _env(
@@ -102,17 +106,16 @@ async def main() -> None:
     if config["allowed_tools"]:
         allowed_tools = [t.strip() for t in config["allowed_tools"].split(",") if t.strip()] or None
 
-    # Create runner via backend factory (CCDB_BACKEND=claude|codex)
+    # Create runner via backend factory (CCDB_BACKEND=claude|codex|zai)
     backend_name = config["backend"]
-    default_command = "codex" if backend_name == "codex" else "claude"
 
-    # BackendFactory is the runtime authority for building Claude/Codex
+    # BackendFactory is the runtime authority for building Claude/Codex/Z.ai
     # runners on demand (e.g. when the user switches via /backend).
     from .backend_factory import BackendFactory
 
     factory = BackendFactory(
         claude_command=config["claude_command"]
-        or (config["command"] if backend_name == "claude" else "")
+        or (config["command"] if backend_name in {"claude", "zai"} else "")
         or "claude",
         codex_command=config["codex_command"]
         or (config["command"] if backend_name == "codex" else "")
@@ -125,20 +128,13 @@ async def main() -> None:
         allowed_tools=allowed_tools,
         append_system_prompt=config["append_system_prompt"] or None,
         effort=config["effort"] or None,
+        zai_env_file=config["zai_env_file"] or None,
+        zai_model=config["zai_model"] or None,
     )
 
-    runner = create_backend(
+    runner = factory.build(
         backend=backend_name,
-        command=config["command"] or default_command,
         model=config["model"],
-        permission_mode=config["permission_mode"],
-        working_dir=config["working_dir"] or None,
-        timeout_seconds=int(config["timeout"]),
-        dangerously_skip_permissions=config["dangerously_skip_permissions"].lower()
-        in ("true", "1", "yes"),
-        allowed_tools=allowed_tools,
-        append_system_prompt=config["append_system_prompt"] or None,
-        effort=config["effort"] or None,
     )
 
     owner_id = int(config["owner_id"]) if config["owner_id"] else None

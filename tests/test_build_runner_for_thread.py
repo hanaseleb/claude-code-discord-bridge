@@ -16,6 +16,7 @@ import aiosqlite
 
 from claude_code_core.codex_runner import CodexRunner
 from claude_code_core.runner import ClaudeRunner
+from claude_code_core.zai_runner import ZaiRunner
 from claude_discord.backend_factory import BackendFactory
 from claude_discord.backend_settings import BackendSettings
 from claude_discord.database.settings_repo import SettingsRepository
@@ -120,6 +121,34 @@ class TestBuildRunnerBackendResolution:
         # No stored model for codex → defer to the Codex CLI's own default
         # (omit --model) rather than pinning a stale version.
         assert runner.model is None
+
+    async def test_thread_override_zai_returns_isolated_zai_runner(self, tmp_path: Path) -> None:
+        env_file = tmp_path / "zai.env"
+        env_file.write_text("ANTHROPIC_AUTH_TOKEN=test-key\n")
+        repo = await _new_settings_repo()
+        settings = BackendSettings(
+            repo,
+            env_backend="claude",
+            env_model_for_claude="sonnet",
+            env_model_for_codex="",
+        )
+        await settings.set_backend("zai", thread_id=100)
+        factory = _factory()
+        factory.zai_env_file = str(env_file)
+        cog = _cog(factory=factory, settings=settings)
+
+        runner = await cog._build_runner_for_thread(
+            thread_id=100,
+            model_override="opus",
+            tools_override=None,
+            fork_session=False,
+            working_dir_override=None,
+            effort_override=None,
+        )
+
+        assert isinstance(runner, ZaiRunner)
+        assert runner.model == "glm-5.2[1m]"
+        assert runner._build_env()["ANTHROPIC_AUTH_TOKEN"] == "test-key"
 
     async def test_other_thread_keeps_global(self) -> None:
         repo = await _new_settings_repo()

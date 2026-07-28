@@ -321,11 +321,17 @@ async def setup_bridge(
         from .backend_settings import BackendSettings
 
         _runner_class = runner.__class__.__name__
+        _runner_backend = getattr(
+            runner,
+            "backend_name",
+            _runner_class.replace("Runner", "").lower(),
+        )
         backend_settings = BackendSettings(
             settings_repo,
-            env_backend=_runner_class.replace("Runner", "").lower(),
-            env_model_for_claude=(runner.model if _runner_class == "ClaudeRunner" else ""),
-            env_model_for_codex=(runner.model if _runner_class == "CodexRunner" else ""),
+            env_backend=_runner_backend,
+            env_model_for_claude=(runner.model if _runner_backend == "claude" else ""),
+            env_model_for_codex=(runner.model if _runner_backend == "codex" else ""),
+            env_model_for_zai=(runner.model if _runner_backend == "zai" else ""),
         )
 
     chat_cog = ClaudeChatCog(

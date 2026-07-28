@@ -9,9 +9,11 @@ import aiosqlite
 import pytest
 
 from claude_discord.backend_settings import (
+    ALL_BACKENDS,
     BACKEND_GLOBAL,
     CODEX_STATUS_GLOBAL,
     BackendSettings,
+    session_is_resumable,
 )
 from claude_discord.database.settings_repo import SettingsRepository
 
@@ -26,6 +28,9 @@ async def _new_repo() -> tuple[SettingsRepository, Path]:
 
 
 class TestResolution:
+    def test_zai_is_a_supported_backend(self) -> None:
+        assert ALL_BACKENDS == ("claude", "codex", "zai")
+
     async def test_global_only_env_fallback(self) -> None:
         repo, _ = await _new_repo()
         s = BackendSettings(
@@ -38,6 +43,11 @@ class TestResolution:
         assert await s.current_model("claude") == "sonnet"
         assert await s.current_model("codex") is None
 
+    def test_zai_and_claude_sessions_are_not_interchangeable(self) -> None:
+        assert session_is_resumable("claude", "zai") is False
+        assert session_is_resumable("zai", "claude") is False
+        assert session_is_resumable("zai", "zai") is True
+
     async def test_global_set_overrides_env(self) -> None:
         repo, _ = await _new_repo()
         s = BackendSettings(
@@ -48,6 +58,23 @@ class TestResolution:
         )
         await s.set_backend("codex")
         assert await s.current_backend() == "codex"
+
+    async def test_zai_backend_and_model_are_independent(self) -> None:
+        repo, _ = await _new_repo()
+        s = BackendSettings(
+            repo,
+            env_backend="claude",
+            env_model_for_claude="sonnet",
+            env_model_for_codex="",
+            env_model_for_zai="glm-5.2[1m]",
+        )
+
+        await s.set_backend("zai")
+        await s.set_model("zai", "glm-4.7")
+
+        assert await s.current_backend() == "zai"
+        assert await s.current_model("zai") == "glm-4.7"
+        assert await s.current_model("claude") == "sonnet"
 
     async def test_thread_overrides_global(self) -> None:
         repo, _ = await _new_repo()

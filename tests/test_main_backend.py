@@ -24,6 +24,12 @@ class TestCreateBackendFromEnv:
         backend = create_backend(backend="claude", model="sonnet")
         assert isinstance(backend, ClaudeRunner)
 
+    def test_zai_backend(self) -> None:
+        from claude_code_core.zai_runner import ZaiRunner
+
+        backend = create_backend(backend="zai", model="glm-5.2[1m]")
+        assert isinstance(backend, ZaiRunner)
+
     def test_codex_passes_working_dir(self) -> None:
         backend = create_backend(backend="codex", model="o4-mini", working_dir="/tmp")
         assert isinstance(backend, CodexRunner)
@@ -82,3 +88,18 @@ class TestEnvVarRename:
     def test_ccdb_backend_env(self) -> None:
         config = self._load({"CCDB_BACKEND": "codex"})
         assert config["backend"] == "codex"
+
+    def test_zai_backend_has_independent_model_and_env_file(self) -> None:
+        config = self._load(
+            {
+                "CCDB_BACKEND": "zai",
+                "CLAUDE_MODEL": "opus",
+                "CCDB_ZAI_MODEL": "glm-4.7",
+                "CCDB_ZAI_ENV_FILE": "/run/secrets/zai.env",
+            }
+        )
+
+        assert config["backend"] == "zai"
+        assert config["model"] == "glm-4.7"
+        assert config["zai_model"] == "glm-4.7"
+        assert config["zai_env_file"] == "/run/secrets/zai.env"

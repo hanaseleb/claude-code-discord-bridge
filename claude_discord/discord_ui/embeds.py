@@ -23,10 +23,12 @@ AUTOCOMPACT_THRESHOLD = 83.5
 _BACKEND_TITLE: dict[str, str] = {
     "claude": "\U0001f916 Claude Code",  # robot face 🤖
     "codex": "\U0001f300 OpenAI Codex",  # cyclone 🌀
+    "zai": "\U0001f7e3 Z.ai GLM",  # purple circle 🟣
 }
 _BACKEND_COLOR_START: dict[str, int] = {
     "claude": COLOR_INFO,  # Discord blurple
     "codex": 0x10A37F,  # OpenAI teal-green
+    "zai": 0x6D5DFB,  # Z.ai purple
 }
 
 
@@ -83,7 +85,7 @@ def session_start_embed(
 ) -> discord.Embed:
     """Create an embed for session start.
 
-    Title prefix and color reflect which backend (claude/codex) is
+    Title prefix and color reflect which backend (claude/codex/zai) is
     handling this session. The model name appears in the footer.
     """
     title_prefix, color, _ = _backend_display(backend, model)
