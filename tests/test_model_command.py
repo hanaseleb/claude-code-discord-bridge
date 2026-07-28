@@ -35,7 +35,11 @@ def _offline_model_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
     care that the autocomplete surfaces whatever it is handed.
     """
 
-    async def _fallback_only(*, fallback: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    async def _fallback_only(
+        *,
+        fallback: list[tuple[str, str]],
+        env: object | None = None,
+    ) -> list[tuple[str, str]]:
         return fallback
 
     monkeypatch.setattr("claude_discord.cogs.backend_command.claude_model_choices", _fallback_only)
@@ -108,7 +112,11 @@ class TestModelAutocomplete:
     ) -> None:
         """A model that shipped after this release must appear without a code change."""
 
-        async def _discovered(*, fallback: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        async def _discovered(
+            *,
+            fallback: list[tuple[str, str]],
+            env: object | None = None,
+        ) -> list[tuple[str, str]]:
             return [("opus", "Claude Opus 5 (alias)"), ("claude-opus-5", "Claude Opus 5")]
 
         monkeypatch.setattr("claude_discord.cogs.backend_command.claude_model_choices", _discovered)
@@ -119,12 +127,44 @@ class TestModelAutocomplete:
 
         assert [c.value for c in choices] == ["opus", "claude-opus-5"]
 
+    async def test_claude_discovery_uses_final_runner_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CLI overlay credentials and base URL must reach model discovery."""
+        expected_env = {
+            "ANTHROPIC_AUTH_TOKEN": "test-key",
+            "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
+        }
+        seen_env: object | None = None
+
+        async def _discovered(
+            *,
+            fallback: list[tuple[str, str]],
+            env: object | None = None,
+        ) -> list[tuple[str, str]]:
+            nonlocal seen_env
+            seen_env = env
+            return fallback
+
+        monkeypatch.setattr("claude_discord.cogs.backend_command.claude_model_choices", _discovered)
+        settings = await _settings()
+        cog = _make_cog(settings)
+        cog._chat_cog.runner._build_env.return_value = expected_env
+
+        await cog._model_name_autocomplete(_channel_interaction(), "")
+
+        assert seen_env == expected_env
+
     async def test_codex_backend_ignores_claude_discovery(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Codex must never be handed Claude ids, discovered or otherwise."""
 
-        async def _discovered(*, fallback: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        async def _discovered(
+            *,
+            fallback: list[tuple[str, str]],
+            env: object | None = None,
+        ) -> list[tuple[str, str]]:
             raise AssertionError("Claude discovery must not run for the Codex backend")
 
         monkeypatch.setattr("claude_discord.cogs.backend_command.claude_model_choices", _discovered)

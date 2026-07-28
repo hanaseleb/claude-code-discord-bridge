@@ -812,6 +812,45 @@ In chat-only mode, permission requests and `AskUserQuestion` prompts are **alway
 | `CCDB_INGEST_TOKEN` | Bearer token for `POST /api/ingest` (independent of `api_secret`); unset ⇒ the endpoint responds `503` | (optional) |
 | `CCDB_INGEST_REQUIRE_COMPLETE` | Set to `1` to reject an ingest with `409` when its `attachments_manifest` proves attachments went missing, instead of starting a session on partial evidence | `0` |
 
+### Using Z.ai through Claude Code
+
+Z.ai is an API provider for the existing `claude` backend, not a separate ccdb
+backend. Keep `CCDB_BACKEND=claude` and route only the Claude Code subprocess
+through Z.ai with a CLI environment overlay:
+
+```bash
+# Create a separate secret file outside the repository.
+install -m 600 /dev/null /home/you/.config/ccdb/zai.env
+```
+
+Add the following to `/home/you/.config/ccdb/zai.env`:
+
+```dotenv
+ANTHROPIC_AUTH_TOKEN=your_zai_api_key
+ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic
+ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-4.5-air
+ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5.2[1m]
+ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5.2[1m]
+CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+API_TIMEOUT_MS=3000000
+```
+
+Then reference that file from the bot's `.env`:
+
+```dotenv
+CCDB_BACKEND=claude
+CCDB_CLI_ENV_FILE=/home/you/.config/ccdb/zai.env
+```
+
+Restart once after changing the bot's `.env`. Later edits to `zai.env` are read
+for every new CLI invocation and do not require another restart. The session
+footer reports `API: Z.ai`, and `/model` discovery uses the same Z.ai endpoint
+and credentials as Claude Code. The endpoint above is the Anthropic-compatible
+endpoint documented for Claude Code; the general
+`https://api.z.ai/api/paas/v4/` OpenAI-compatible endpoint cannot provide
+Claude Code's agent runtime to ccdb.
+
 ### Permission Modes — What Works in `-p` Mode
 
 Claude Code CLI runs in **`-p` (non-interactive) mode** when used through ccdb. In this mode, the CLI **cannot prompt for permission** — tools that require approval are immediately rejected. This is a [CLI design constraint](https://code.claude.com/docs/en/headless), not a ccdb limitation.

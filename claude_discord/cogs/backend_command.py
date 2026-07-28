@@ -275,7 +275,10 @@ class BackendCommandCog(commands.Cog):
         """
         backend = await self._backend_for_autocomplete(interaction)
         if backend == "claude":
-            suggestions = await claude_model_choices(fallback=SUGGESTED_MODELS["claude"])
+            suggestions = await claude_model_choices(
+                fallback=SUGGESTED_MODELS["claude"],
+                env=self._chat_cog.runner._build_env(),
+            )
         else:
             suggestions = SUGGESTED_MODELS.get(backend, [])
         current_lower = current.lower()

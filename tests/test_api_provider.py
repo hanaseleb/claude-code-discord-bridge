@@ -58,6 +58,11 @@ def test_custom_base_url_uses_host() -> None:
     assert detect_api_provider(env) == "Custom endpoint (apim.example.com)"
 
 
+def test_zai_base_url_has_provider_label() -> None:
+    env = {"ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic"}
+    assert detect_api_provider(env) == "Z.ai"
+
+
 def test_custom_base_url_non_url_falls_back_gracefully() -> None:
     env = {"ANTHROPIC_BASE_URL": "localhost:4000"}
     assert detect_api_provider(env).startswith("Custom endpoint")
