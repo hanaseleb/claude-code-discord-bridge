@@ -25,7 +25,7 @@ from claude_discord.claude.types import (
     ToolCategory,
     ToolUseEvent,
 )
-from claude_discord.cogs.event_processor import EventProcessor
+from claude_discord.cogs.event_processor import EventProcessor, _backend_name_from_runner
 from claude_discord.cogs.run_config import RunConfig
 
 
@@ -54,6 +54,15 @@ def _make_result_event(**kwargs) -> StreamEvent:
         duration_ms=500,
         **kwargs,
     )
+
+
+def test_backend_name_uses_runner_identity() -> None:
+    """Provider-specific ClaudeRunner subclasses keep their own backend tag."""
+
+    class ZaiLikeRunner:
+        backend_name = "zai"
+
+    assert _backend_name_from_runner(ZaiLikeRunner()) == "zai"
 
 
 class TestEventProcessorProperties:
