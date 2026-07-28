@@ -45,7 +45,10 @@ logger = logging.getLogger(__name__)
 
 
 def _backend_name_from_runner(runner: object) -> str:
-    """Best-effort mapping from runner class name to embed backend tag."""
+    """Return the runner's declared backend, with legacy class-name fallback."""
+    declared = getattr(runner, "backend_name", None)
+    if declared in {"claude", "codex", "zai"}:
+        return declared
     cls = type(runner).__name__
     if cls == "CodexRunner":
         return "codex"
