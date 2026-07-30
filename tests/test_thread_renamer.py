@@ -77,6 +77,44 @@ class TestSuggestTitleNormal:
         assert args[model_idx + 1] == "haiku"
 
     @pytest.mark.asyncio
+    async def test_codex_uses_exec_with_safe_one_shot_options(self):
+        proc = _make_proc(b"Codex title\n")
+        with patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
+            result = await suggest_title(
+                "some request",
+                claude_command="/usr/local/bin/codex",
+                backend="codex",
+                model="gpt-5.6-sol",
+                cwd="/workspace",
+            )
+
+        assert result == "Codex title"
+        args = mock_exec.call_args.args
+        assert args[:2] == ("/usr/local/bin/codex", "exec")
+        assert "-p" not in args
+        assert "--sandbox" in args
+        assert args[args.index("--sandbox") + 1] == "read-only"
+        assert "--skip-git-repo-check" in args
+        assert "--ephemeral" in args
+        assert "--ignore-rules" in args
+        assert args[args.index("--model") + 1] == "gpt-5.6-sol"
+        assert mock_exec.call_args.kwargs["cwd"] == "/workspace"
+
+    @pytest.mark.asyncio
+    async def test_zai_uses_configured_model_instead_of_haiku(self):
+        proc = _make_proc("Z.aiタイトル\n".encode())
+        with patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
+            result = await suggest_title(
+                "some request",
+                backend="zai",
+                model="glm-5.2[1m]",
+            )
+
+        assert result == "Z.aiタイトル"
+        args = mock_exec.call_args.args
+        assert args[1:4] == ("-p", "--model", "glm-5.2[1m]")
+
+    @pytest.mark.asyncio
     async def test_prompt_contains_user_message(self):
         proc = _make_proc(b"Some Title\n")
         with patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:

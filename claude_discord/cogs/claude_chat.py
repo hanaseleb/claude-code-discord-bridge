@@ -767,10 +767,22 @@ class ClaudeChatCog(commands.Cog):
         Runs as a background asyncio task so it does not block the main session.
         Silently no-ops on any error so the thread name is never left in a bad state.
         """
+        backend = getattr(self.runner, "backend_name", "claude")
+        if backend not in {"claude", "codex", "zai"}:
+            backend = "claude"
+        model = getattr(self.runner, "model", None)
+        if not isinstance(model, str):
+            model = None
+        cwd = getattr(self.runner, "working_dir", None)
+        if not isinstance(cwd, str):
+            cwd = None
         title = await suggest_title(
             user_message,
             claude_command=self.runner.command,
             env=self.runner._build_env(),
+            backend=backend,
+            model=model,
+            cwd=cwd,
         )
         if title:
             try:

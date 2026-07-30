@@ -1986,6 +1986,10 @@ class TestAutoRenameThreads:
         from unittest.mock import patch
 
         cog = self._make_cog(auto_rename=True)
+        cog.runner.backend_name = "codex"
+        cog.runner.model = "gpt-test"
+        cog.runner.working_dir = "/workspace"
+        cog.runner._build_env.return_value = {"PATH": "/usr/bin"}
         mock_thread = MagicMock()
         mock_thread.id = 999
         mock_thread.edit = AsyncMock()
@@ -1993,9 +1997,17 @@ class TestAutoRenameThreads:
         with patch(
             "claude_discord.cogs.claude_chat.suggest_title",
             new=AsyncMock(return_value="Refactor payment module"),
-        ):
+        ) as mock_suggest:
             await cog._background_rename_thread(mock_thread, "refactor payment module")
 
+        mock_suggest.assert_awaited_once_with(
+            "refactor payment module",
+            claude_command="claude",
+            env={"PATH": "/usr/bin"},
+            backend="codex",
+            model="gpt-test",
+            cwd="/workspace",
+        )
         mock_thread.edit.assert_awaited_once_with(name="Refactor payment module")
 
     @pytest.mark.asyncio

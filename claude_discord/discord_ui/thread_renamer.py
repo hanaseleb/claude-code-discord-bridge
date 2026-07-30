@@ -1,4 +1,4 @@
-"""Thread title auto-renamer — uses `claude -p` to generate a concise title.
+"""Thread title auto-renamer for the configured AI backend.
 
 After a new thread is created from a user's first message, this module runs
 a lightweight one-shot call to generate a descriptive, short thread title.
@@ -79,34 +79,62 @@ async def suggest_title(
     user_message: str,
     claude_command: str = "claude",
     env: dict[str, str] | None = None,
+    *,
+    backend: str = "claude",
+    model: str | None = None,
+    cwd: str | None = None,
 ) -> str | None:
-    """Call `claude -p` and return a short thread title.
+    """Call the active backend CLI and return a short thread title.
 
     Returns None on empty input, timeout, or any error, so the caller can
     keep the original thread name without any visible failure.
     Prompt is passed as a direct argument to the binary (no shell, no injection risk).
 
     Args:
+        claude_command: CLI command path. The legacy parameter name is kept for
+            API compatibility; it may point to ``claude`` or ``codex``.
         env: Optional environment dict for the subprocess. When provided
              (e.g. from ``ClaudeRunner._build_env()``), ensures the CLI
              picks up the same API keys and overlay config as main sessions.
              When ``None``, the subprocess inherits the parent environment.
+        backend: ``claude``, ``codex``, or ``zai``.
+        model: Active backend model. Z.ai must use its configured GLM model
+            because the Claude-only ``haiku`` alias is not available there.
+        cwd: Working directory to pass to the backend subprocess.
     """
     if not user_message.strip():
         return None
 
     prompt = _PROMPT_TEMPLATE.format(text=user_message[:2000])
+    if backend == "codex":
+        args = [
+            claude_command,
+            "exec",
+            "--sandbox",
+            "read-only",
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--ignore-rules",
+            "-c",
+            "model_reasoning_effort=low",
+        ]
+        if model:
+            args.extend(["--model", model])
+        args.append(prompt)
+    else:
+        # Z.ai exposes an Anthropic-compatible endpoint through the Claude CLI,
+        # but it does not implement Anthropic's "haiku" model alias.
+        title_model = model if backend == "zai" and model else "haiku"
+        args = [claude_command, "-p", "--model", title_model, prompt]
 
     try:
         proc = await asyncio.create_subprocess_exec(
-            claude_command,
-            "-p",
-            "--model",
-            "haiku",
-            prompt,
+            *args,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            cwd=cwd,
         )
         try:
             stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=_TIMEOUT_SECONDS)
