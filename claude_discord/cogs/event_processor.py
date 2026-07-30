@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 def _backend_name_from_runner(runner: object) -> str:
     """Return the runner's declared backend, with legacy class-name fallback."""
     declared = getattr(runner, "backend_name", None)
-    if declared in {"claude", "codex", "zai"}:
+    if declared in {"claude", "codex", "zai", "copilot"}:
         return declared
     cls = type(runner).__name__
     if cls == "CodexRunner":
@@ -1011,7 +1011,7 @@ async def _post_engine_status_footer(
         )
 
     parts: list[str] = []
-    if api_label and backend in {"claude", "zai"}:
+    if api_label and backend in {"claude", "zai", "copilot"}:
         parts.append(f"\U0001f517 API: {api_label}")
     if statusline_text:
         parts.append(statusline_text)

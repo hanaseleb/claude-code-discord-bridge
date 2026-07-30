@@ -22,6 +22,15 @@ def test_zai_session_embed_has_distinct_backend_title() -> None:
     assert "glm-5.2[1m]" in embed.footer.text
 
 
+def test_copilot_session_embed_has_distinct_backend_title() -> None:
+    embed = session_start_embed(backend="copilot", model="auto")
+
+    assert embed.title is not None
+    assert "GitHub Copilot" in embed.title
+    assert embed.footer is not None
+    assert "auto" in embed.footer.text
+
+
 class TestThinkingEmbed:
     def test_description_uses_plain_code_block(self) -> None:
         """Thinking embed must use a plain code block (no spoiler) for guaranteed readability.

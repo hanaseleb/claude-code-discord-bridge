@@ -64,6 +64,11 @@ def test_backend_name_uses_runner_identity() -> None:
 
     assert _backend_name_from_runner(ZaiLikeRunner()) == "zai"
 
+    class CopilotLikeRunner:
+        backend_name = "copilot"
+
+    assert _backend_name_from_runner(CopilotLikeRunner()) == "copilot"
+
 
 class TestEventProcessorProperties:
     """Initial state and property behaviour."""

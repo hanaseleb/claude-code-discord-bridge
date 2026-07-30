@@ -30,6 +30,12 @@ class TestCreateBackendFromEnv:
         backend = create_backend(backend="zai", model="glm-5.2[1m]")
         assert isinstance(backend, ZaiRunner)
 
+    def test_copilot_backend(self) -> None:
+        from claude_code_core.copilot_runner import CopilotRunner
+
+        backend = create_backend(backend="copilot", model="auto")
+        assert isinstance(backend, CopilotRunner)
+
     def test_codex_passes_working_dir(self) -> None:
         backend = create_backend(backend="codex", model="o4-mini", working_dir="/tmp")
         assert isinstance(backend, CodexRunner)
@@ -103,3 +109,17 @@ class TestEnvVarRename:
         assert config["model"] == "glm-4.7"
         assert config["zai_model"] == "glm-4.7"
         assert config["zai_env_file"] == "/run/secrets/zai.env"
+
+    def test_copilot_backend_has_independent_model_and_command(self) -> None:
+        config = self._load(
+            {
+                "CCDB_BACKEND": "copilot",
+                "CLAUDE_MODEL": "opus",
+                "CCDB_COPILOT_MODEL": "auto",
+                "CCDB_COPILOT_COMMAND": "/opt/copilot",
+            }
+        )
+
+        assert config["backend"] == "copilot"
+        assert config["model"] == "auto"
+        assert config["copilot_command"] == "/opt/copilot"

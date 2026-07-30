@@ -30,8 +30,14 @@ DEFAULT_MODEL: dict[str, str | None] = {
     "claude": "sonnet",
     "codex": None,
     "zai": "glm-5.2[1m]",
+    "copilot": "auto",
 }
-DEFAULT_COMMAND = {"claude": "claude", "codex": "codex", "zai": "claude"}
+DEFAULT_COMMAND = {
+    "claude": "claude",
+    "codex": "codex",
+    "zai": "claude",
+    "copilot": "copilot",
+}
 
 
 class BackendFactory:
@@ -53,6 +59,7 @@ class BackendFactory:
         api_secret: str | None = None,
         zai_env_file: str | None = None,
         zai_model: str | None = None,
+        copilot_command: str = "copilot",
     ) -> None:
         self.claude_command = claude_command or DEFAULT_COMMAND["claude"]
         self.codex_command = codex_command or DEFAULT_COMMAND["codex"]
@@ -67,6 +74,7 @@ class BackendFactory:
         self.api_secret = api_secret
         self.zai_env_file = zai_env_file
         self.zai_model = zai_model or DEFAULT_MODEL["zai"]
+        self.copilot_command = copilot_command or DEFAULT_COMMAND["copilot"]
 
     def command_for(self, backend: str) -> str:
         if backend == "claude":
@@ -75,6 +83,8 @@ class BackendFactory:
             return self.codex_command
         if backend == "zai":
             return self.claude_command
+        if backend == "copilot":
+            return self.copilot_command
         raise ValueError(f"Unknown backend: {backend!r}")
 
     def default_model_for(self, backend: str) -> str | None:
@@ -107,15 +117,13 @@ class BackendFactory:
         }
         if thread_id is not None:
             kwargs["thread_id"] = thread_id
-        # ``append_system_prompt`` and the env-level ``effort`` are Claude-only
-        # defaults. We deliberately do NOT forward them to Codex: Codex effort
-        # is resolved per-backend from BackendSettings at spawn time (and its
-        # valid values differ — e.g. Claude's "max" is not a Codex level).
-        if backend in {"claude", "zai"}:
-            if self.append_system_prompt is not None:
-                kwargs["append_system_prompt"] = self.append_system_prompt
-            if self.effort is not None:
-                kwargs["effort"] = self.effort
+        # The system prompt is backend-neutral, but the env-level ``effort`` is
+        # a legacy Claude default. Copilot and Codex effort are resolved
+        # per-backend from BackendSettings because their accepted values differ.
+        if backend in {"claude", "zai", "copilot"} and self.append_system_prompt is not None:
+            kwargs["append_system_prompt"] = self.append_system_prompt
+        if backend in {"claude", "zai"} and self.effort is not None:
+            kwargs["effort"] = self.effort
         if backend == "zai":
             kwargs["env_file"] = self.zai_env_file
         if self.api_port is not None:

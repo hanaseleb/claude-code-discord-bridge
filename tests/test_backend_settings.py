@@ -28,8 +28,8 @@ async def _new_repo() -> tuple[SettingsRepository, Path]:
 
 
 class TestResolution:
-    def test_zai_is_a_supported_backend(self) -> None:
-        assert ALL_BACKENDS == ("claude", "codex", "zai")
+    def test_copilot_is_a_supported_backend(self) -> None:
+        assert ALL_BACKENDS == ("claude", "codex", "zai", "copilot")
 
     async def test_global_only_env_fallback(self) -> None:
         repo, _ = await _new_repo()
@@ -47,6 +47,8 @@ class TestResolution:
         assert session_is_resumable("claude", "zai") is False
         assert session_is_resumable("zai", "claude") is False
         assert session_is_resumable("zai", "zai") is True
+        assert session_is_resumable("copilot", "copilot") is True
+        assert session_is_resumable("copilot", "codex") is False
 
     async def test_global_set_overrides_env(self) -> None:
         repo, _ = await _new_repo()

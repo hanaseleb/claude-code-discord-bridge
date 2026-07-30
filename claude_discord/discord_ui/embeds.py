@@ -24,11 +24,13 @@ _BACKEND_TITLE: dict[str, str] = {
     "claude": "\U0001f916 Claude Code",  # robot face 🤖
     "codex": "\U0001f300 OpenAI Codex",  # cyclone 🌀
     "zai": "\U0001f7e3 Z.ai GLM",  # purple circle 🟣
+    "copilot": "\U0001f4bb GitHub Copilot",  # laptop 💻
 }
 _BACKEND_COLOR_START: dict[str, int] = {
     "claude": COLOR_INFO,  # Discord blurple
     "codex": 0x10A37F,  # OpenAI teal-green
     "zai": 0x6D5DFB,  # Z.ai purple
+    "copilot": 0x6E40C9,  # GitHub purple
 }
 
 

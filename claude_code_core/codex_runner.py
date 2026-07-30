@@ -543,6 +543,7 @@ class CodexRunner:
             "DISCORD_TOKEN",
             "API_SECRET_KEY",
             "CCDB_ZAI_ENV_FILE",
+            "COPILOT_GITHUB_TOKEN",
         }
     )
 

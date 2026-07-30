@@ -218,6 +218,15 @@ class TestBuildEnv:
         finally:
             del os.environ["DISCORD_BOT_TOKEN"]
 
+    def test_strips_copilot_token_from_non_copilot_backend(self) -> None:
+        os.environ["COPILOT_GITHUB_TOKEN"] = "copilot-secret"
+        try:
+            runner = ClaudeRunner()
+            env = runner._build_env()
+            assert "COPILOT_GITHUB_TOKEN" not in env
+        finally:
+            del os.environ["COPILOT_GITHUB_TOKEN"]
+
     def test_strips_discord_token_alt(self) -> None:
         os.environ["DISCORD_TOKEN"] = "secret-token"
         try:

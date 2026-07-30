@@ -15,6 +15,7 @@ def _factory(**overrides: object) -> BackendFactory:
     defaults: dict[str, object] = {
         "claude_command": "claude",
         "codex_command": "codex",
+        "copilot_command": "copilot",
         "permission_mode": "acceptEdits",
         "working_dir": None,
         "timeout_seconds": 300,
@@ -70,6 +71,17 @@ class TestFactoryApiPort:
         assert runner.api_port == 8099
         env = runner._build_env()
         assert env["CCDB_API_URL"] == "http://127.0.0.1:8099"
+
+    def test_copilot_backend_uses_its_own_command_and_gets_api_port(self) -> None:
+        from claude_code_core.copilot_runner import CopilotRunner
+
+        factory = _factory(api_port=8099)
+        runner = factory.build(backend="copilot")
+
+        assert isinstance(runner, CopilotRunner)
+        assert runner.command == "copilot"
+        assert runner.model == "auto"
+        assert runner.api_port == 8099
 
     def test_zai_backend_uses_claude_command_and_dedicated_env(self, tmp_path) -> None:
         env_file = tmp_path / "zai.env"

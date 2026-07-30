@@ -287,14 +287,14 @@ If the bot restarts mid-session, interrupted Claude sessions are automatically r
 - **Automatic (any shutdown)** — `ClaudeChatCog.cog_unload()` marks all mid-run sessions whenever the bot shuts down via any mechanism (`systemctl stop`, `bot.close()`, SIGTERM, etc.).
 - **Manual** — Any session can call `POST /api/mark-resume` directly.
 
-### Backend Switching — Claude / Codex / Z.ai on Demand
+### Backend Switching — Claude / Codex / Z.ai / GitHub Copilot on Demand
 
 ccdb 3.0 introduces three slash commands that change which AI handles the next session, with no bot restart:
 
-- `/backend [name] [scope]` — show or switch backend. `name` is `claude`, `codex`, or `zai`. `scope` is `thread` (this thread only) or `global` (server-wide default). When you omit `scope`, the command auto-resolves: in a thread it scopes to that thread, otherwise it sets the global default.
+- `/backend [name] [scope]` — show or switch backend. `name` is `claude`, `codex`, `zai`, or `copilot`. `scope` is `thread` (this thread only) or `global` (server-wide default). When you omit `scope`, the command auto-resolves: in a thread it scopes to that thread, otherwise it sets the global default.
 - `/model [name] [scope]` — show or switch the model used by the **current** backend. Each backend remembers its own model preference, so flipping backend back and forth keeps your favoured models intact. Leave a backend's model unset to defer to that CLI's own default (e.g. Codex uses the `model` in `~/.codex/config.toml`, so ccdb tracks the console default instead of pinning a version).
   The `name` autocomplete is **discovered live**: ccdb asks the Anthropic models endpoint (using the credentials the Claude Code CLI already has) which models your account can see, so a model released this morning shows up in the dropdown without a ccdb upgrade. Aliases (`opus`, `sonnet`, …) are labelled with the model they currently resolve to. Offline, unauthenticated, or on Bedrock/Vertex/Foundry it silently falls back to a small static list; set `CCDB_MODEL_DISCOVERY=0` to always use that list. Codex suggestions stay static (the Codex CLI exposes no model listing) — any id you type still works.
-- `/effort [level] [scope]` — show or switch the **reasoning effort** used by the current backend. Valid levels are backend-specific: Claude and Z.ai accept `low/medium/high/max`; Codex accepts `minimal/low/medium/high/xhigh` (mapped to the CLI's `model_reasoning_effort`). Leave it unset to defer to the CLI default.
+- `/effort [level] [scope]` — show or switch the **reasoning effort** used by the current backend. Valid levels are backend-specific: Claude and Z.ai accept `low/medium/high/max`; Codex accepts `minimal/low/medium/high/xhigh`; Copilot accepts `low/medium/high/xhigh`. Leave it unset to defer to the backend default.
 
 All three commands persist to SQLite via `SettingsRepository`, so the choice survives bot restarts. Calling them with no arguments prints the current global default plus any thread override.
 
@@ -310,7 +310,8 @@ Visual cues so you never forget which one you're talking to:
 - **Claude sessions** open with a blurple embed titled "🤖 Claude Code session started".
 - **Codex sessions** open with an OpenAI-teal embed titled "🌀 OpenAI Codex session started".
 - **Z.ai sessions** open with a purple embed titled "🟣 Z.ai GLM session started".
-- The completion embed prepends a backend/model chip such as `🧠 Claude · sonnet`, `🧠 Codex · gpt-5.6-sol`, or `🧠 Z.ai · glm-5.2[1m]` alongside the usual duration / cost / token / context metrics. (When a backend's model is left at the CLI default, the chip shows just the backend name.)
+- **Copilot sessions** open with a GitHub-purple embed titled "💻 GitHub Copilot session started".
+- The completion embed prepends a backend/model chip such as `🧠 Claude · sonnet`, `🧠 Codex · gpt-5.6-sol`, `🧠 Z.ai · glm-5.2[1m]`, or `🧠 GitHub Copilot · auto` alongside the usual duration / cost / token / context metrics. (When a backend's model is left at the CLI default, the chip shows just the backend name.)
 
 Concrete example:
 
@@ -325,15 +326,17 @@ Concrete example:
                                        # other threads keep the global codex defaults
 /backend zai scope:thread             # this thread only → Z.ai GLM
 /model glm-5.2[1m] scope:thread       # this thread only → GLM with 1M context
+/backend copilot scope:thread         # this thread only → GitHub Copilot
+/model auto scope:thread              # let Copilot select the model
 ```
 
 Behind the scenes:
 
-- `BackendFactory` — captures the static configuration at boot (per-backend command path, permission mode, working dir, allowed tools, timeout, append-system-prompt, effort, api_port, api_secret) and builds a fresh `ClaudeRunner`, `CodexRunner`, or credential-isolated `ZaiRunner` on demand. `api_port` is wired automatically by `setup_bridge` after the REST API server starts, so factory-built runners always have `CCDB_API_URL` injected into their subprocess environment.
+- `BackendFactory` — captures the static configuration at boot (per-backend command path, permission mode, working dir, allowed tools, timeout, append-system-prompt, effort, api_port, api_secret) and builds a fresh `ClaudeRunner`, `CodexRunner`, credential-isolated `ZaiRunner`, or SDK-backed `CopilotRunner` on demand. `api_port` is wired automatically by `setup_bridge` after the REST API server starts, so factory-built runners always have `CCDB_API_URL` injected into their subprocess environment.
 - `BackendSettings` — thin wrapper over `SettingsRepository` that resolves the active backend with **thread > global > env** precedence and persists writes from the slash commands.
 - `SessionBackend` Protocol — the abstract interface that all runners satisfy. Internal plumbing (cogs, embeds, views, scheduler, webhook trigger) takes a `SessionBackend`, never one concrete runner class.
 
-**Where does each backend authenticate?** Claude Code uses your existing Claude Pro/Max subscription via the `claude` CLI's `claude login`. Codex uses your existing ChatGPT Plus/Pro/Business subscription via the `codex` CLI's `codex login`. Z.ai reads its API key from the dedicated `CCDB_ZAI_ENV_FILE` only when `/backend zai` is active; `/backend claude` continues to use Anthropic login credentials.
+**Where does each backend authenticate?** Claude Code uses your existing Claude Pro/Max subscription via the `claude` CLI's `claude login`. Codex uses your existing ChatGPT Plus/Pro/Business subscription via the `codex` CLI's `codex login`. Z.ai reads its API key from the dedicated `CCDB_ZAI_ENV_FILE` only when `/backend zai` is active. Copilot uses the login stored by the standalone GitHub Copilot CLI's `copilot login`, or `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` for a headless deployment.
 
 ---
 
@@ -437,7 +440,7 @@ Behind the scenes:
 
 ---
 
-## Quick Start — Claude or Codex in Discord in 5 Minutes
+## Quick Start — Claude, Codex, or Copilot in Discord
 
 **Prerequisites:**
 
@@ -445,7 +448,8 @@ Behind the scenes:
 - At least one of:
   - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — installed and authenticated (`claude login`). Recommended for Anthropic Pro/Max subscribers.
   - [OpenAI Codex CLI](https://github.com/openai/codex) — `npm install -g @openai/codex` then `codex login`. Uses your existing ChatGPT Plus/Pro/Business subscription.
-- You can install both. Switch between them at runtime with `/backend` (see [Backend Switching](#backend-switching--claude--codex-on-demand)).
+  - [GitHub Copilot SDK](https://github.com/github/copilot-sdk) — Python 3.11+ and an active Copilot plan. Install ccdb with the `copilot` extra, then use a token or a login created by the standalone GitHub Copilot CLI.
+- You can install any combination and switch at runtime with `/backend`.
 
 **Platform support:** Primarily developed and tested on **Linux**. macOS and Windows are supported and pass CI, but receive less real-world testing — bug reports welcome.
 
@@ -775,10 +779,12 @@ In chat-only mode, permission requests and `AskUserQuestion` prompts are **alway
 |----------|-------------|---------|
 | `DISCORD_BOT_TOKEN` | Your Discord bot token | (required) |
 | `DISCORD_CHANNEL_ID` | Channel ID for Claude chat | (required) |
-| `CCDB_BACKEND` | CLI backend to use: `claude` (Claude Code CLI), `codex` (OpenAI Codex CLI), or `zai` (Z.ai GLM through Claude Code) | `claude` |
+| `CCDB_BACKEND` | Backend to use: `claude`, `codex`, `zai`, or `copilot` | `claude` |
 | `CCDB_COMMAND` | Path or name of the CLI binary (overrides `CLAUDE_COMMAND`). Used by the initial runner picked from `CCDB_BACKEND`; superseded by the per-backend variables below when `/backend` switches at runtime. | _(auto: `claude` or `codex`; Z.ai uses `claude`)_ |
 | `CCDB_CLAUDE_COMMAND` | Explicit path to the Claude CLI binary. Used by `BackendFactory` whenever `/backend claude` is active, regardless of the initial `CCDB_BACKEND`. Falls back to `CLAUDE_COMMAND`, then `claude` (PATH). | (optional) |
 | `CCDB_CODEX_COMMAND` | Explicit path to the OpenAI Codex CLI binary. Required when running the bot under systemd (default service PATH does not include `~/.npm-global/bin`). Falls back to `codex` (PATH). | (optional) |
+| `CCDB_COPILOT_COMMAND` | Optional path to a specific Copilot CLI. When omitted, the Python SDK's bundled compatible CLI is used. | (SDK bundled CLI) |
+| `CCDB_COPILOT_MODEL` | Default model for Copilot. `auto` lets Copilot select the model. | `auto` |
 | `CCDB_ZAI_ENV_FILE` | Path to the chmod-600 `KEY=VALUE` file containing the Z.ai API key and Anthropic-compatible endpoint settings. Applied only to `/backend zai` sessions. | (optional) |
 | `CCDB_ZAI_MODEL` | Default model for the independent Z.ai backend. | `glm-5.2[1m]` |
 | `PATH` | Binary search path for the bot **and every CLI session it spawns** — sessions inherit the bot's environment. Set it in `.env` when running under systemd, which starts units with a minimal PATH and never reads `~/.bashrc` / `~/.profile`. See [Toolchain PATH](#toolchain-path--set-it-in-env). | (inherited from the parent process) |
@@ -855,6 +861,28 @@ reports `API: Z.ai`. The Z.ai file is never applied to Claude or Codex sessions.
 The endpoint above is the Anthropic-compatible endpoint documented for Claude Code; the general
 `https://api.z.ai/api/paas/v4/` OpenAI-compatible endpoint cannot provide
 Claude Code's agent runtime to ccdb.
+
+### Using the GitHub Copilot backend
+
+Copilot support is optional because the official SDK requires Python 3.11 or
+newer. Install the extra in the same environment that runs ccdb:
+
+```bash
+uv sync --extra copilot
+```
+
+For a headless service, provide a fine-grained token with the **Copilot
+Requests** permission in the bot environment:
+
+```dotenv
+COPILOT_GITHUB_TOKEN=github_pat_...
+```
+
+Alternatively, install the standalone GitHub Copilot CLI and run `copilot
+login`; the SDK reuses that account login. (`python -m copilot login` is not a
+valid SDK command.) Then choose `/backend copilot` in Discord. The default
+model is `auto`; use `/model` to pin another model. Tool permission requests
+are routed to the same Discord Allow/Deny buttons used by Claude.
 
 ### Permission Modes — What Works in `-p` Mode
 

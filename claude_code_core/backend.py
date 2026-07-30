@@ -58,7 +58,7 @@ def create_backend(
     """Create a backend runner by name.
 
     Args:
-        backend: "claude", "codex", or "zai".
+        backend: "claude", "codex", "zai", or "copilot".
         model: Model identifier (e.g. "sonnet", "o4-mini"). ``None`` lets the
             backend pick its own default — Codex omits ``--model`` and defers
             to its CLI config.
@@ -78,5 +78,10 @@ def create_backend(
         from .zai_runner import ZaiRunner
 
         return ZaiRunner(model=model, **kwargs)  # type: ignore[arg-type, return-value]
+
+    if backend == "copilot":
+        from .copilot_runner import CopilotRunner
+
+        return CopilotRunner(model=model, **kwargs)  # type: ignore[arg-type]
 
     raise ValueError(f"Unknown backend: {backend!r}")

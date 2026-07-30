@@ -12,6 +12,14 @@ from claude_code_core.codex_runner import CodexRunner, parse_codex_line
 from claude_code_core.types import MessageType
 
 
+def test_build_env_strips_copilot_token_from_codex(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "copilot-secret")
+
+    assert "COPILOT_GITHUB_TOKEN" not in CodexRunner()._build_env()
+
+
 class _FakeStream:
     def __init__(self, lines: list[bytes] | None = None, read_data: bytes = b"") -> None:
         self._lines = list(lines or [])

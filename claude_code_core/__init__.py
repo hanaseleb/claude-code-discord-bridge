@@ -30,6 +30,7 @@ from .api_provider import detect_api_provider
 # Backend
 from .backend import SessionBackend, create_backend
 from .codex_runner import CodexRunner, parse_codex_line
+from .copilot_runner import CopilotRunner, convert_copilot_event
 
 # Database
 from .lounge_repo import LoungeMessage, LoungeRepository
@@ -84,9 +85,11 @@ __all__ = [
     "detect_api_provider",
     # Backend
     "CodexRunner",
+    "CopilotRunner",
     "SessionBackend",
     "create_backend",
     "parse_codex_line",
+    "convert_copilot_event",
     # Runner
     "ClaudeRunner",
     "ZaiRunner",

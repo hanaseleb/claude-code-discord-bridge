@@ -332,6 +332,7 @@ async def setup_bridge(
             env_model_for_claude=(runner.model if _runner_backend == "claude" else ""),
             env_model_for_codex=(runner.model if _runner_backend == "codex" else ""),
             env_model_for_zai=(runner.model if _runner_backend == "zai" else ""),
+            env_model_for_copilot=(runner.model if _runner_backend == "copilot" else ""),
         )
 
     chat_cog = ClaudeChatCog(

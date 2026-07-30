@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 import aiosqlite
 
 from claude_code_core.codex_runner import CodexRunner
+from claude_code_core.copilot_runner import CopilotRunner
 from claude_code_core.runner import ClaudeRunner
 from claude_code_core.zai_runner import ZaiRunner
 from claude_discord.backend_factory import BackendFactory
@@ -121,6 +122,33 @@ class TestBuildRunnerBackendResolution:
         # No stored model for codex → defer to the Codex CLI's own default
         # (omit --model) rather than pinning a stale version.
         assert runner.model is None
+
+    async def test_thread_override_copilot_uses_sdk_runner_and_stored_effort(
+        self,
+    ) -> None:
+        repo = await _new_settings_repo()
+        settings = BackendSettings(
+            repo,
+            env_backend="claude",
+            env_model_for_claude="sonnet",
+            env_model_for_codex="",
+        )
+        await settings.set_backend("copilot", thread_id=101)
+        await settings.set_effort("copilot", "high", thread_id=101)
+        cog = _cog(factory=_factory(), settings=settings)
+
+        runner = await cog._build_runner_for_thread(
+            thread_id=101,
+            model_override=None,
+            tools_override=None,
+            fork_session=False,
+            working_dir_override=None,
+            effort_override=None,
+        )
+
+        assert isinstance(runner, CopilotRunner)
+        assert runner.model == "auto"
+        assert runner.effort == "high"
 
     async def test_thread_override_zai_returns_isolated_zai_runner(self, tmp_path: Path) -> None:
         env_file = tmp_path / "zai.env"

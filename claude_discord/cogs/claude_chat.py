@@ -768,7 +768,7 @@ class ClaudeChatCog(commands.Cog):
         Silently no-ops on any error so the thread name is never left in a bad state.
         """
         backend = getattr(self.runner, "backend_name", "claude")
-        if backend not in {"claude", "codex", "zai"}:
+        if backend not in {"claude", "codex", "zai", "copilot"}:
             backend = "claude"
         model = getattr(self.runner, "model", None)
         if not isinstance(model, str):

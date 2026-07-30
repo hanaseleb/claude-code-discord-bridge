@@ -62,6 +62,13 @@ class TestCreateBackend:
         assert isinstance(backend, ZaiRunner)
         assert isinstance(backend, SessionBackend)
 
+    def test_copilot_backend(self) -> None:
+        from claude_code_core.copilot_runner import CopilotRunner
+
+        backend = create_backend(backend="copilot", model="auto")
+        assert isinstance(backend, CopilotRunner)
+        assert isinstance(backend, SessionBackend)
+
     def test_unknown_backend_raises(self) -> None:
         with pytest.raises(ValueError, match="Unknown backend"):
             create_backend(backend="unknown", model="sonnet")

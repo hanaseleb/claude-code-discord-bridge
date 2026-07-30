@@ -49,6 +49,8 @@ def load_config() -> dict[str, str]:
         model = _env("CCDB_MODEL", "CLAUDE_MODEL", "")
     elif backend == "zai":
         model = os.getenv("CCDB_MODEL") or os.getenv("CCDB_ZAI_MODEL", "glm-5.2[1m]")
+    elif backend == "copilot":
+        model = os.getenv("CCDB_MODEL") or os.getenv("CCDB_COPILOT_MODEL", "auto")
     else:
         model = _env("CCDB_MODEL", "CLAUDE_MODEL", "sonnet")
 
@@ -61,6 +63,7 @@ def load_config() -> dict[str, str]:
         # the user switches backend at runtime via /backend.
         "claude_command": _env("CCDB_CLAUDE_COMMAND", "CLAUDE_COMMAND", ""),
         "codex_command": os.getenv("CCDB_CODEX_COMMAND", ""),
+        "copilot_command": os.getenv("CCDB_COPILOT_COMMAND", ""),
         "model": model,
         "zai_env_file": os.getenv("CCDB_ZAI_ENV_FILE", ""),
         "zai_model": os.getenv("CCDB_ZAI_MODEL", "glm-5.2[1m]"),
@@ -106,7 +109,7 @@ async def main() -> None:
     if config["allowed_tools"]:
         allowed_tools = [t.strip() for t in config["allowed_tools"].split(",") if t.strip()] or None
 
-    # Create runner via backend factory (CCDB_BACKEND=claude|codex|zai)
+    # Create runner via backend factory (CCDB_BACKEND=claude|codex|zai|copilot)
     backend_name = config["backend"]
 
     # BackendFactory is the runtime authority for building Claude/Codex/Z.ai
@@ -120,6 +123,9 @@ async def main() -> None:
         codex_command=config["codex_command"]
         or (config["command"] if backend_name == "codex" else "")
         or "codex",
+        copilot_command=config["copilot_command"]
+        or (config["command"] if backend_name == "copilot" else "")
+        or "copilot",
         permission_mode=config["permission_mode"],
         working_dir=config["working_dir"] or None,
         timeout_seconds=int(config["timeout"]),

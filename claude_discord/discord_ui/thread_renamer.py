@@ -97,7 +97,7 @@ async def suggest_title(
              (e.g. from ``ClaudeRunner._build_env()``), ensures the CLI
              picks up the same API keys and overlay config as main sessions.
              When ``None``, the subprocess inherits the parent environment.
-        backend: ``claude``, ``codex``, or ``zai``.
+        backend: ``claude``, ``codex``, ``zai``, or ``copilot``.
         model: Active backend model. Z.ai must use its configured GLM model
             because the Claude-only ``haiku`` alias is not available there.
         cwd: Working directory to pass to the backend subprocess.
@@ -121,6 +121,18 @@ async def suggest_title(
         if model:
             args.extend(["--model", model])
         args.append(prompt)
+    elif backend == "copilot":
+        args = [
+            claude_command,
+            "-s",
+            "-p",
+            prompt,
+            "--model",
+            model or "auto",
+            "--no-ask-user",
+            "--deny-tool",
+            "shell,write,url",
+        ]
     else:
         # Z.ai exposes an Anthropic-compatible endpoint through the Claude CLI,
         # but it does not implement Anthropic's "haiku" model alias.
