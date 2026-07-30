@@ -94,6 +94,32 @@ class TestGating:
         )
         assert body is None
 
+    async def test_selected_codex_home_is_used_for_status_fetch(self) -> None:
+        thread = AsyncMock()
+        settings = await _settings("auto")
+        fetch = AsyncMock(return_value="🤖 Codex: 5h 1%")
+        with (
+            patch(f"{_ES}.get_codex_status_line", fetch),
+            patch(f"{_EP}._render_claude_statusline_text", AsyncMock(return_value=None)),
+        ):
+            await _post_engine_status_footer(
+                thread,
+                backend="codex",
+                working_dir="/tmp",
+                model="gpt-5.6-sol",
+                context_window=None,
+                input_tokens=None,
+                cache_creation_tokens=None,
+                cache_read_tokens=None,
+                api_label="OpenAI",
+                backend_settings=settings,
+                codex_command="codex",
+                codex_home="/srv/codex/business",
+                thread_id=1,
+            )
+
+        fetch.assert_awaited_once_with("codex", codex_home="/srv/codex/business")
+
     async def test_no_settings_means_off(self) -> None:
         thread = AsyncMock()
         with (

@@ -266,6 +266,8 @@ class CodexRunner:
         append_system_prompt: str | None = None,
         images: list[ImageData] | None = None,
         effort: str | None = None,
+        codex_home: str | None = None,
+        codex_workspace: str | None = None,
         **_kwargs: object,
     ) -> None:
         self.command = command
@@ -287,6 +289,8 @@ class CodexRunner:
         self.thread_id = thread_id
         self.append_system_prompt = append_system_prompt
         self.images = images
+        self.codex_home = codex_home
+        self.codex_workspace = codex_workspace
         self._process: asyncio.subprocess.Process | None = None
 
     async def run(
@@ -404,6 +408,8 @@ class CodexRunner:
             ),
             images=self.images,
             effort=self.effort if effort is _UNSET else effort,  # type: ignore[arg-type]
+            codex_home=self.codex_home,
+            codex_workspace=self.codex_workspace,
         )
 
     async def interrupt(self) -> None:
@@ -512,6 +518,8 @@ class CodexRunner:
     def _build_env(self) -> dict[str, str]:
         """Build environment variables for the subprocess."""
         env = {k: v for k, v in os.environ.items() if k not in self._STRIPPED_ENV_KEYS}
+        if self.codex_home is not None:
+            env["CODEX_HOME"] = self.codex_home
         if self.api_port is not None:
             env["CCDB_API_URL"] = f"http://127.0.0.1:{self.api_port}"
         if self.api_secret is not None:

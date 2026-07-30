@@ -32,6 +32,13 @@ class TestSessionIsResumable:
         assert session_is_resumable(None, "claude") is True
         assert session_is_resumable("", "claude") is True
 
+    def test_codex_workspace_must_match_when_configured(self):
+        assert session_is_resumable("codex", "codex", "personal", "personal") is True
+        assert session_is_resumable("codex", "codex", "personal", "business") is False
+
+    def test_legacy_codex_session_is_not_resumed_into_named_workspace(self):
+        assert session_is_resumable("codex", "codex", None, "business") is False
+
 
 class TestSessionRepositoryBackendColumn:
     @pytest.mark.asyncio
@@ -62,6 +69,27 @@ class TestSessionRepositoryBackendColumn:
             repo = SessionRepository(db_path)
             await repo.save(2, "sess-c")
             assert (await repo.get(2)).backend is None
+
+    @pytest.mark.asyncio
+    async def test_codex_workspace_roundtrip_and_preservation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "sessions.db")
+            await init_db(db_path)
+            repo = SessionRepository(db_path)
+
+            await repo.save(
+                3,
+                "sess-workspace-a",
+                backend="codex",
+                codex_workspace="personal",
+            )
+            assert (await repo.get(3)).codex_workspace == "personal"
+
+            await repo.save(3, "sess-workspace-a2")
+            assert (await repo.get(3)).codex_workspace == "personal"
+
+            await repo.save(3, "sess-workspace-b", codex_workspace="business")
+            assert (await repo.get(3)).codex_workspace == "business"
 
 
 class TestErrorDuringExecutionIsSurfaced:

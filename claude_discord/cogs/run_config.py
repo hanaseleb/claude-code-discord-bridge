@@ -109,6 +109,8 @@ class RunConfig:
     backend_settings: BackendSettings | None = None
     # Command used to invoke Codex (for the Codex status probe in the footer).
     codex_command: str = "codex"
+    # Selected CODEX_HOME for the Codex status probe.
+    codex_home: str | None = None
 
     # Prevent accidental field mutation — RunConfig is a value object.
     # Use dataclasses.replace() to create modified copies.

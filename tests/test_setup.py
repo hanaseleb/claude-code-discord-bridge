@@ -105,6 +105,81 @@ async def test_setup_bridge_wires_backend_settings_into_components_and_scheduler
 
 
 @pytest.mark.asyncio
+async def test_setup_bridge_loads_named_codex_workspaces_from_environment(
+    tmp_path: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from claude_discord.backend_factory import BackendFactory
+
+    personal = tmp_path / "codex-personal"  # type: ignore[operator]
+    business = tmp_path / "codex-business"  # type: ignore[operator]
+    monkeypatch.setenv(
+        "CCDB_CODEX_WORKSPACES",
+        f'{{"personal":"{personal}","business":"{business}"}}',
+    )
+    monkeypatch.setenv("CCDB_CODEX_WORKSPACE", "business")
+    factory = BackendFactory(
+        claude_command="claude",
+        codex_command="codex",
+        permission_mode="acceptEdits",
+        working_dir=None,
+        timeout_seconds=300,
+        dangerously_skip_permissions=False,
+        allowed_tools=None,
+        append_system_prompt=None,
+        effort=None,
+    )
+
+    result = await setup_bridge(
+        _make_bot(),
+        _make_runner(),
+        session_db_path=str(tmp_path / "sessions.db"),  # type: ignore[operator]
+        enable_scheduler=False,
+        backend_factory=factory,
+    )
+
+    assert result.backend_settings is not None
+    assert result.backend_settings.available_codex_workspaces == ("personal", "business")
+    assert await result.backend_settings.current_codex_workspace() == "business"
+
+
+@pytest.mark.asyncio
+async def test_setup_bridge_applies_default_workspace_to_startup_codex_runner(
+    tmp_path: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from claude_code_core.codex_runner import CodexRunner
+    from claude_discord.backend_factory import BackendFactory
+
+    business = tmp_path / "codex-business"  # type: ignore[operator]
+    monkeypatch.setenv("CCDB_CODEX_WORKSPACES", f'{{"business":"{business}"}}')
+    monkeypatch.setenv("CCDB_CODEX_WORKSPACE", "business")
+    runner = CodexRunner(command="codex")
+    factory = BackendFactory(
+        claude_command="claude",
+        codex_command="codex",
+        permission_mode="acceptEdits",
+        working_dir=None,
+        timeout_seconds=300,
+        dangerously_skip_permissions=False,
+        allowed_tools=None,
+        append_system_prompt=None,
+        effort=None,
+    )
+
+    await setup_bridge(
+        _make_bot(),
+        runner,
+        session_db_path=str(tmp_path / "sessions.db"),  # type: ignore[operator]
+        enable_scheduler=False,
+        backend_factory=factory,
+    )
+
+    assert runner.codex_workspace == "business"
+    assert runner.codex_home == str(business.resolve())
+
+
+@pytest.mark.asyncio
 async def test_setup_bridge_skips_scheduler_when_disabled(tmp_path: object) -> None:
     """setup_bridge should NOT register SchedulerCog when enable_scheduler=False."""
     bot = _make_bot()

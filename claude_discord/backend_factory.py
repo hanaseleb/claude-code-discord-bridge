@@ -81,6 +81,8 @@ class BackendFactory:
         backend: str,
         model: str | None = None,
         thread_id: int | None = None,
+        codex_home: str | None = None,
+        codex_workspace: str | None = None,
     ) -> SessionBackend:
         """Construct a fresh SessionBackend for the given backend/model."""
         chosen_model = model or self.default_model_for(backend)
@@ -104,6 +106,9 @@ class BackendFactory:
                 kwargs["append_system_prompt"] = self.append_system_prompt
             if self.effort is not None:
                 kwargs["effort"] = self.effort
+        elif backend == "codex":
+            kwargs["codex_home"] = codex_home
+            kwargs["codex_workspace"] = codex_workspace
         if self.api_port is not None:
             kwargs["api_port"] = self.api_port
         if self.api_secret is not None:

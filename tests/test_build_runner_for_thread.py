@@ -18,6 +18,7 @@ from claude_code_core.codex_runner import CodexRunner
 from claude_code_core.runner import ClaudeRunner
 from claude_discord.backend_factory import BackendFactory
 from claude_discord.backend_settings import BackendSettings
+from claude_discord.cogs.headless_backend import build_headless_runner
 from claude_discord.database.settings_repo import SettingsRepository
 
 
@@ -161,6 +162,55 @@ class TestBuildRunnerBackendResolution:
             effort_override=None,
         )
         assert isinstance(runner, CodexRunner)
+
+    async def test_codex_workspace_home_is_selected_per_thread(self) -> None:
+        repo = await _new_settings_repo()
+        settings = BackendSettings(
+            repo,
+            env_backend="codex",
+            env_model_for_claude="",
+            env_model_for_codex="",
+            codex_workspaces={
+                "personal": "/srv/codex/personal",
+                "business": "/srv/codex/business",
+            },
+            env_codex_workspace="personal",
+        )
+        await settings.set_codex_workspace("business", thread_id=99)
+        cog = _cog(factory=_factory(), settings=settings)
+
+        runner = await cog._build_runner_for_thread(
+            thread_id=99,
+            model_override=None,
+            tools_override=None,
+            fork_session=False,
+            working_dir_override=None,
+            effort_override=None,
+        )
+
+        assert isinstance(runner, CodexRunner)
+        assert runner.codex_home == "/srv/codex/business"
+        assert runner.codex_workspace == "business"
+
+    async def test_headless_runner_uses_global_codex_workspace(self) -> None:
+        repo = await _new_settings_repo()
+        settings = BackendSettings(
+            repo,
+            env_backend="codex",
+            env_model_for_claude="",
+            env_model_for_codex="",
+            codex_workspaces={"business": "/srv/codex/business"},
+            env_codex_workspace="business",
+        )
+
+        runner = await build_headless_runner(
+            ClaudeRunner(command="claude"),
+            factory=_factory(),
+            settings=settings,
+        )
+
+        assert isinstance(runner, CodexRunner)
+        assert runner.codex_home == "/srv/codex/business"
 
 
 class TestBuildRunnerModelResolution:

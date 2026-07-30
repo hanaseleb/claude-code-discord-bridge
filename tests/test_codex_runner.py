@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -733,6 +734,41 @@ class TestCodexRunnerArgvStructure:
             assert args.index("resume") == 2, (
                 f"resume must follow exec at index 2, got index {args.index('resume')}"
             )
+
+
+class TestCodexWorkspaceEnvironment:
+    def test_configured_home_is_injected_without_mutating_parent_env(self, monkeypatch) -> None:
+        monkeypatch.setenv("CODEX_HOME", "/parent/default")
+        runner = CodexRunner(
+            command="codex",
+            codex_home="/srv/codex/personal",
+            codex_workspace="personal",
+        )
+
+        env = runner._build_env()
+
+        assert env["CODEX_HOME"] == "/srv/codex/personal"
+        assert runner.codex_workspace == "personal"
+        assert os.environ["CODEX_HOME"] == "/parent/default"
+
+    def test_unconfigured_home_preserves_inherited_codex_home(self, monkeypatch) -> None:
+        monkeypatch.setenv("CODEX_HOME", "/parent/default")
+
+        env = CodexRunner(command="codex")._build_env()
+
+        assert env["CODEX_HOME"] == "/parent/default"
+
+    def test_clone_preserves_codex_workspace(self) -> None:
+        runner = CodexRunner(
+            command="codex",
+            codex_home="/srv/codex/business",
+            codex_workspace="business",
+        )
+
+        cloned = runner.clone()
+
+        assert cloned.codex_home == "/srv/codex/business"
+        assert cloned.codex_workspace == "business"
 
 
 class TestCodexRunnerStdin:

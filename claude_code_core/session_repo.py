@@ -33,6 +33,7 @@ class SessionRecord:
     context_window: int | None = None
     context_used: int | None = None
     backend: str | None = None
+    codex_workspace: str | None = None
 
 
 class SessionRepository:
@@ -63,6 +64,7 @@ class SessionRepository:
         origin: str = "discord",
         summary: str | None = None,
         backend: str | None = None,
+        codex_workspace: str | None = None,
     ) -> SessionRecord:
         """Create or update a session mapping.
 
@@ -73,8 +75,9 @@ class SessionRepository:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """INSERT INTO sessions
-                     (thread_id, session_id, working_dir, model, origin, summary, backend)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                     (thread_id, session_id, working_dir, model, origin, summary, backend,
+                      codex_workspace)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(thread_id) DO UPDATE SET
                      session_id = excluded.session_id,
                      working_dir = COALESCE(excluded.working_dir, sessions.working_dir),
@@ -82,8 +85,20 @@ class SessionRepository:
                      origin = COALESCE(excluded.origin, sessions.origin),
                      summary = COALESCE(excluded.summary, sessions.summary),
                      backend = COALESCE(excluded.backend, sessions.backend),
+                     codex_workspace = COALESCE(
+                         excluded.codex_workspace, sessions.codex_workspace
+                     ),
                      last_used_at = datetime('now', 'localtime')""",
-                (thread_id, session_id, working_dir, model, origin, summary, backend),
+                (
+                    thread_id,
+                    session_id,
+                    working_dir,
+                    model,
+                    origin,
+                    summary,
+                    backend,
+                    codex_workspace,
+                ),
             )
             await db.commit()
 

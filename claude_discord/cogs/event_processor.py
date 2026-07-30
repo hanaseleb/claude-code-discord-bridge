@@ -52,6 +52,12 @@ def _backend_name_from_runner(runner: object) -> str:
     return "claude"
 
 
+def _codex_workspace_from_runner(runner: object) -> str | None:
+    """Return a configured workspace name without treating mocks as strings."""
+    workspace = getattr(runner, "codex_workspace", None)
+    return workspace if isinstance(workspace, str) and workspace else None
+
+
 # Marker file prefix. The full name includes the thread ID to prevent
 # cross-contamination when multiple sessions share the same working_dir.
 _ATTACHMENT_MARKER_PREFIX = ".ccdb-attachments"
@@ -325,12 +331,15 @@ class EventProcessor:
             # For resumed sessions (config.session_id is set), pass no summary to keep
             # the existing one via COALESCE in the SQL query.
             backend = _backend_name_from_runner(self._config.runner)
+            workspace = _codex_workspace_from_runner(self._config.runner)
+            workspace_arg = {"codex_workspace": workspace} if workspace is not None else {}
             if self._config.session_id:
                 await self._config.repo.save(
                     self._config.thread.id,
                     self._state.session_id,
                     working_dir=wd,
                     backend=backend,
+                    **workspace_arg,
                 )
             else:
                 summary = self._config.prompt[:100] if self._config.prompt else None
@@ -340,6 +349,7 @@ class EventProcessor:
                     working_dir=wd,
                     summary=summary,
                     backend=backend,
+                    **workspace_arg,
                 )
 
         # Guard: post session_start_embed only once (Claude can emit multiple SYSTEM events).
@@ -582,6 +592,7 @@ class EventProcessor:
                         backend_settings=self._config.backend_settings,
                         codex_command=self._config.codex_command,
                         thread_id=self._config.thread.id,
+                        codex_home=self._config.codex_home,
                     ),
                     name=f"statusline-{self._config.thread.id}",
                 )
@@ -603,10 +614,13 @@ class EventProcessor:
 
         if event.session_id:
             if self._config.repo:
+                workspace = _codex_workspace_from_runner(self._config.runner)
+                workspace_arg = {"codex_workspace": workspace} if workspace is not None else {}
                 await self._config.repo.save(
                     self._config.thread.id,
                     event.session_id,
                     backend=_backend_name_from_runner(self._config.runner),
+                    **workspace_arg,
                 )
             self._state.session_id = event.session_id
 
@@ -962,6 +976,7 @@ async def _post_engine_status_footer(
     backend_settings: object | None,
     codex_command: str,
     thread_id: int | None,
+    codex_home: str | None = None,
 ) -> None:
     """Post the per-turn engine status footer (Claude statusLine + Codex line).
 
@@ -988,7 +1003,7 @@ async def _post_engine_status_footer(
     # Codex line (account/rateLimits/read via codex app-server), cached.
     codex_line: str | None = None
     if show_codex:
-        codex_line = await get_codex_status_line(codex_command)
+        codex_line = await get_codex_status_line(codex_command, codex_home=codex_home)
         if codex_line is None and mode == "on":
             codex_line = "\U0001f916 Codex: 残量取得失敗（codex login 済みか確認）"
 

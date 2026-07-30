@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 import pytest
 
+from claude_code_core.codex_runner import CodexRunner
 from claude_discord.claude.types import (
     AskOption,
     AskQuestion,
@@ -98,6 +99,29 @@ class TestOnSystem:
         await p.process(StreamEvent(message_type=MessageType.SYSTEM, session_id="sess-abc"))
 
         assert p.session_id == "sess-abc"
+
+    @pytest.mark.asyncio
+    async def test_persists_codex_workspace_with_session(self, thread: MagicMock) -> None:
+        repo = MagicMock()
+        repo.save = AsyncMock()
+        runner = CodexRunner(
+            command="codex",
+            codex_home="/srv/codex/business",
+            codex_workspace="business",
+        )
+        config = _make_config(thread, runner, repo=repo)
+        processor = EventProcessor(config)
+
+        await processor.process(StreamEvent(message_type=MessageType.SYSTEM, session_id="s1"))
+
+        repo.save.assert_awaited_once_with(
+            thread.id,
+            "s1",
+            working_dir=runner.working_dir,
+            summary="test prompt",
+            backend="codex",
+            codex_workspace="business",
+        )
 
     @pytest.mark.asyncio
     async def test_saves_to_repo_with_summary_for_new_session(

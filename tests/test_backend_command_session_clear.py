@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import aiosqlite
 import discord
 
+from claude_code_core.codex_runner import CodexRunner
 from claude_discord.backend_factory import BackendFactory
 from claude_discord.backend_settings import BackendSettings
 from claude_discord.cogs.backend_command import BackendCommandCog
@@ -116,6 +117,87 @@ class TestBackendCommandClearsSession:
         await cog.backend_command.callback(cog, interaction, name="claude", scope="thread")
 
         cog._chat_cog.repo.delete.assert_not_awaited()
+
+
+class TestCodexWorkspaceCommand:
+    async def _settings(self) -> BackendSettings:
+        repo = await _new_settings_repo()
+        return BackendSettings(
+            repo,
+            env_backend="codex",
+            env_model_for_claude="",
+            env_model_for_codex="",
+            codex_workspaces={
+                "personal": "/srv/codex/personal",
+                "business": "/srv/codex/business",
+            },
+            env_codex_workspace="personal",
+        )
+
+    async def test_switches_workspace_for_current_thread(self) -> None:
+        settings = await self._settings()
+        cog = _make_cog(settings)
+        interaction = _make_thread_interaction(thread_id=42)
+
+        await cog.codex_workspace_command.callback(
+            cog,
+            interaction,
+            name="business",
+            scope="thread",
+        )
+
+        assert await settings.current_codex_workspace(thread_id=42) == "business"
+        response = interaction.response.send_message.await_args.args[0]
+        assert "business" in response
+        assert "/srv/codex" not in response
+
+    async def test_rejects_name_that_is_not_preconfigured(self) -> None:
+        settings = await self._settings()
+        cog = _make_cog(settings)
+        interaction = _make_thread_interaction(thread_id=42)
+
+        await cog.codex_workspace_command.callback(
+            cog,
+            interaction,
+            name="../../stolen",
+            scope="thread",
+        )
+
+        assert await settings.current_codex_workspace(thread_id=42) == "personal"
+        interaction.response.send_message.assert_awaited_once()
+
+    async def test_global_switch_rebuilds_default_codex_runner(self) -> None:
+        settings = await self._settings()
+        cog = _make_cog(settings)
+        interaction = MagicMock()
+        interaction.channel = MagicMock()
+        interaction.response.send_message = AsyncMock()
+
+        await cog.codex_workspace_command.callback(
+            cog,
+            interaction,
+            name="business",
+            scope="global",
+        )
+
+        assert isinstance(cog._chat_cog.runner, CodexRunner)
+        assert cog._chat_cog.runner.codex_workspace == "business"
+
+    async def test_reports_configuration_hint_when_no_workspaces_exist(self) -> None:
+        repo = await _new_settings_repo()
+        settings = BackendSettings(
+            repo,
+            env_backend="codex",
+            env_model_for_claude="",
+            env_model_for_codex="",
+        )
+        cog = _make_cog(settings)
+        interaction = _make_thread_interaction(thread_id=42)
+
+        await cog.codex_workspace_command.callback(cog, interaction, name=None, scope=None)
+
+        response = interaction.response.send_message.await_args.args[0]
+        assert "CCDB_CODEX_WORKSPACES" in response
 
     async def test_clears_session_when_switching_back(self) -> None:
         repo = await _new_settings_repo()

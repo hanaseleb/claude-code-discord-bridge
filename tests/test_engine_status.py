@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import os
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from claude_discord.discord_ui.engine_status import (
     CodexStatusProvider,
+    fetch_codex_rate_limits,
     format_codex_status_line,
 )
 
@@ -116,3 +121,31 @@ class TestProviderCache:
         await prov.get_line()
         await prov.get_line(force=True)
         assert calls["n"] == 2
+
+
+class TestWorkspaceEnvironment:
+    async def test_fetch_injects_codex_home_only_into_child_process(self, monkeypatch) -> None:
+        monkeypatch.setenv("CODEX_HOME", "/parent/default")
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "must-not-reach-codex")
+        stdin = MagicMock()
+        stdin.drain = AsyncMock()
+        stdout = MagicMock()
+        stdout.readline = AsyncMock(
+            return_value=(json.dumps({"jsonrpc": "2.0", "id": 2, "result": SAMPLE}) + "\n").encode()
+        )
+        process = MagicMock()
+        process.stdin = stdin
+        process.stdout = stdout
+        process.terminate = MagicMock()
+        process.wait = AsyncMock(return_value=0)
+
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)) as spawn:
+            result = await fetch_codex_rate_limits(
+                "codex",
+                codex_home="/srv/codex/business",
+            )
+
+        assert result == SAMPLE
+        assert spawn.await_args.kwargs["env"]["CODEX_HOME"] == "/srv/codex/business"
+        assert "DISCORD_BOT_TOKEN" not in spawn.await_args.kwargs["env"]
+        assert os.environ["CODEX_HOME"] == "/parent/default"

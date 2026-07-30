@@ -77,6 +77,7 @@ _HELP_CATEGORY: dict[str, str | None] = {
     "sync-settings": "📌 Session",
     "model": "🤖 Model",
     "backend": "🤖 Model",
+    "codex-workspace": "🤖 Model",
     "engine-status": "🤖 Model",
     "effort": "⚡ Effort",
     "tools-show": "🔧 Advanced",
@@ -343,10 +344,17 @@ class ClaudeChatCog(commands.Cog):
             # or None for the factory to choose.
             model = await self._backend_settings.current_model(backend, thread_id)
 
+        codex_workspace = (
+            await self._backend_settings.current_codex_workspace(thread_id)
+            if backend == "codex"
+            else None
+        )
         runner = self._factory.build(
             backend=backend,
             model=model,
             thread_id=thread_id,
+            codex_workspace=codex_workspace,
+            codex_home=self._backend_settings.codex_home(codex_workspace),
         )
 
         # Apply per-call overrides that the factory does not know about.
@@ -1136,7 +1144,17 @@ class ClaudeChatCog(commands.Cog):
             return record.session_id
 
         current = await self._backend_settings.current_backend(thread.id)
-        if session_is_resumable(record.backend, current):
+        current_workspace = (
+            await self._backend_settings.current_codex_workspace(thread.id)
+            if current == "codex"
+            else None
+        )
+        if session_is_resumable(
+            record.backend,
+            current,
+            record.codex_workspace,
+            current_workspace,
+        ):
             return record.session_id
 
         logger.info(
@@ -1149,8 +1167,9 @@ class ClaudeChatCog(commands.Cog):
         )
         with contextlib.suppress(discord.HTTPException):
             await thread.send(
-                f"-# 🔀 Backend changed (`{record.backend}` → `{current}`). "
-                f"`{current}` cannot resume a `{record.backend}` session, "
+                f"-# 🔀 Backend or Codex workspace changed "
+                f"(`{record.backend}` → `{current}`). "
+                f"The selected `{current}` environment cannot resume this session, "
                 "so this thread starts a fresh one."
             )
         return None
@@ -1328,6 +1347,11 @@ class ClaudeChatCog(commands.Cog):
         # --- Phase 2: run the subprocess OUTSIDE the lock --------------------
         # The lock is released so a later message can interrupt this run. The
         # runner is already registered, so that message will find and evict it.
+        status_codex_home: str | None = None
+        if self._backend_settings is not None:
+            status_workspace = await self._backend_settings.current_codex_workspace(thread.id)
+            status_codex_home = self._backend_settings.codex_home(status_workspace)
+
         try:
             await run_claude_with_config(
                 RunConfig(
@@ -1355,6 +1379,7 @@ class ClaudeChatCog(commands.Cog):
                     codex_command=(
                         self._factory.codex_command if self._factory is not None else "codex"
                     ),
+                    codex_home=status_codex_home,
                 )
             )
         finally:

@@ -231,7 +231,15 @@ class BackendCommandCog(commands.Cog):
         if resolved_scope == SCOPE_GLOBAL:
             try:
                 model = await self._settings.current_model(name, None)
-                new_runner = self._factory.build(backend=name, model=model)
+                codex_workspace = (
+                    await self._settings.current_codex_workspace() if name == "codex" else None
+                )
+                new_runner = self._factory.build(
+                    backend=name,
+                    model=model,
+                    codex_workspace=codex_workspace,
+                    codex_home=self._settings.codex_home(codex_workspace),
+                )
                 self._chat_cog.runner = new_runner  # type: ignore[assignment]
                 logger.info(
                     "ClaudeChatCog default runner swapped: %s (model=%s)",
@@ -249,6 +257,112 @@ class BackendCommandCog(commands.Cog):
         emoji = "\U0001f300" if name == "codex" else "\U0001f916"
         await interaction.response.send_message(
             f"{emoji} Backend set to `{name}` {scope_label}. Next session will use it.",
+            ephemeral=False,
+        )
+
+    # ── /codex-workspace ──────────────────────────────────────────
+
+    async def _codex_workspace_autocomplete(
+        self,
+        _interaction: discord.Interaction,
+        current: str,
+    ) -> list[Choice[str]]:
+        current_lower = current.lower()
+        return [
+            Choice(name=name, value=name)
+            for name in self._settings.available_codex_workspaces
+            if not current_lower or current_lower in name.lower()
+        ][:25]
+
+    @app_commands.command(
+        name="codex-workspace",
+        description="Show or switch the named Codex login workspace",
+    )
+    @app_commands.choices(
+        scope=[
+            Choice(name="thread", value=SCOPE_THREAD),
+            Choice(name="global", value=SCOPE_GLOBAL),
+        ],
+    )
+    @app_commands.autocomplete(name=_codex_workspace_autocomplete)
+    @app_commands.describe(
+        name="Preconfigured workspace name. Omit to show the current selection.",
+        scope=(
+            "thread: only this thread; global: server-wide default. "
+            "Default: thread when invoked in a thread, otherwise global."
+        ),
+    )
+    async def codex_workspace_command(
+        self,
+        interaction: discord.Interaction,
+        name: str | None = None,
+        scope: str | None = None,
+    ) -> None:
+        """Select an administrator-configured CODEX_HOME by safe symbolic name."""
+        available = self._settings.available_codex_workspaces
+        if not available:
+            await interaction.response.send_message(
+                "No Codex workspaces are configured. Set `CCDB_CODEX_WORKSPACES` "
+                "to a JSON object of workspace names and absolute `CODEX_HOME` paths.",
+                ephemeral=True,
+            )
+            return
+
+        thread_id_now = self._thread_id_or_none(interaction)
+        if name is None:
+            current_global = await self._settings.current_codex_workspace()
+            lines = [f"🗂️ **Global Codex workspace**: `{current_global}`"]
+            if thread_id_now is not None:
+                current_thread = await self._settings.current_codex_workspace(thread_id_now)
+                tag = " (thread override)" if current_thread != current_global else ""
+                lines.append(f"🧵 **This thread**: `{current_thread}`{tag}")
+            lines.append(f"Available: {', '.join(f'`{item}`' for item in available)}")
+            await interaction.response.send_message("\n".join(lines), ephemeral=True)
+            return
+
+        if name not in available:
+            await interaction.response.send_message(
+                f"Unknown Codex workspace `{name}`. Choose a preconfigured workspace.",
+                ephemeral=True,
+            )
+            return
+
+        resolved_scope, target_thread_id = self._resolve_scope(interaction, scope)
+        if resolved_scope == SCOPE_THREAD and target_thread_id is None:
+            await interaction.response.send_message(
+                "`scope:thread` requires the command to be run inside a thread.",
+                ephemeral=True,
+            )
+            return
+
+        previous = await self._settings.current_codex_workspace(target_thread_id)
+        await self._settings.set_codex_workspace(name, thread_id=target_thread_id)
+
+        # Keep the shared default runner aligned when Codex is the active global
+        # backend. Thread-specific runners are rebuilt at each turn.
+        if resolved_scope == SCOPE_GLOBAL:
+            active_backend = await self._settings.current_backend()
+            if active_backend == "codex":
+                model = await self._settings.current_model("codex")
+                self._chat_cog.runner = self._factory.build(
+                    backend="codex",
+                    model=model,
+                    codex_workspace=name,
+                    codex_home=self._settings.codex_home(name),
+                )
+
+        scope_label = (
+            f"<#{target_thread_id}>"
+            if resolved_scope == SCOPE_THREAD and target_thread_id is not None
+            else "**globally**"
+        )
+        fresh_note = (
+            " Existing sessions from another Codex workspace will start fresh on their next turn."
+            if previous != name
+            else ""
+        )
+        await interaction.response.send_message(
+            f"🗂️ Codex workspace set to `{name}` {scope_label}.{fresh_note}",
             ephemeral=False,
         )
 

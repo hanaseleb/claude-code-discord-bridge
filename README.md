@@ -289,14 +289,43 @@ If the bot restarts mid-session, interrupted Claude sessions are automatically r
 
 ### Backend Switching — Claude / Codex on Demand
 
-ccdb 3.0 introduces three slash commands that change which AI handles the next session, with no bot restart:
+ccdb provides four slash commands that change the active engine configuration with no bot restart:
 
 - `/backend [name] [scope]` — show or switch backend. `name` is `claude` or `codex`. `scope` is `thread` (this thread only) or `global` (server-wide default). When you omit `scope`, the command auto-resolves: in a thread it scopes to that thread, otherwise it sets the global default.
+- `/codex-workspace [name] [scope]` — show or switch between administrator-configured Codex logins. The selected `CODEX_HOME` applies to chat, scheduled/headless runs, and the Codex usage footer. Workspace names autocomplete; arbitrary paths from Discord are never accepted.
 - `/model [name] [scope]` — show or switch the model used by the **current** backend. Each backend remembers its own model preference, so flipping backend back and forth keeps your favoured models intact. Leave a backend's model unset to defer to that CLI's own default (e.g. Codex uses the `model` in `~/.codex/config.toml`, so ccdb tracks the console default instead of pinning a version).
   The `name` autocomplete is **discovered live**: ccdb asks the Anthropic models endpoint (using the credentials the Claude Code CLI already has) which models your account can see, so a model released this morning shows up in the dropdown without a ccdb upgrade. Aliases (`opus`, `sonnet`, …) are labelled with the model they currently resolve to. Offline, unauthenticated, or on Bedrock/Vertex/Foundry it silently falls back to a small static list; set `CCDB_MODEL_DISCOVERY=0` to always use that list. Codex suggestions stay static (the Codex CLI exposes no model listing) — any id you type still works.
 - `/effort [level] [scope]` — show or switch the **reasoning effort** used by the current backend. Valid levels are backend-specific: Claude accepts `low/medium/high/max`; Codex accepts `minimal/low/medium/high/xhigh` (mapped to the CLI's `model_reasoning_effort`). Leave it unset to defer to the CLI default.
 
-All three commands persist to SQLite via `SettingsRepository`, so the choice survives bot restarts. Calling them with no arguments prints the current global default plus any thread override.
+All four commands persist to SQLite via `SettingsRepository`, so the choice survives bot restarts. Calling them with no arguments prints the current global default plus any thread override.
+
+To prepare two Codex logins, authenticate each one into a separate directory:
+
+```bash
+mkdir -p /home/you/.codex-personal /home/you/.codex-business
+CODEX_HOME=/home/you/.codex-personal codex login --device-auth
+CODEX_HOME=/home/you/.codex-business codex login --device-auth
+chmod 700 /home/you/.codex-personal /home/you/.codex-business
+```
+
+Then register symbolic names in `.env` and restart ccdb once:
+
+```dotenv
+CCDB_CODEX_WORKSPACES='{"personal":"/home/you/.codex-personal","business":"/home/you/.codex-business"}'
+CCDB_CODEX_WORKSPACE=personal
+```
+
+After that initial configuration, switching is Discord-only:
+
+```text
+/codex-workspace business scope:global
+/codex-workspace personal scope:thread
+```
+
+Only configured names are accepted. ccdb never copies or prints the credential files, and each
+Codex subprocess receives the selected `CODEX_HOME` in its child environment. A Codex session ID
+is also tagged with its workspace name; after a switch, ccdb starts fresh instead of trying to
+resume a session from another login.
 
 **What happens to a thread that already has a session?** Session IDs are not interoperable between the two CLIs — handing a Codex rollout ID to `claude --resume` (or a Claude UUID to `codex exec resume`) fails at the CLI level. ccdb records which backend minted each session ID, so a switch never leaves a thread stranded:
 
@@ -315,6 +344,7 @@ Concrete example:
 
 ```text
 /backend codex                        # global → codex (next new sessions use codex)
+/codex-workspace business             # global → use the business Codex login
 /model gpt-5-codex                    # global → codex uses gpt-5-codex
 /effort xhigh                          # global → codex reasons at xhigh effort
                                        # …open a thread, send a message…
@@ -776,6 +806,8 @@ In chat-only mode, permission requests and `AskUserQuestion` prompts are **alway
 | `CCDB_COMMAND` | Path or name of the CLI binary (overrides `CLAUDE_COMMAND`). Used by the initial runner picked from `CCDB_BACKEND`; superseded by the two per-backend variables below when `/backend` switches at runtime. | _(auto: `claude` or `codex`)_ |
 | `CCDB_CLAUDE_COMMAND` | Explicit path to the Claude CLI binary. Used by `BackendFactory` whenever `/backend claude` is active, regardless of the initial `CCDB_BACKEND`. Falls back to `CLAUDE_COMMAND`, then `claude` (PATH). | (optional) |
 | `CCDB_CODEX_COMMAND` | Explicit path to the OpenAI Codex CLI binary. Required when running the bot under systemd (default service PATH does not include `~/.npm-global/bin`). Falls back to `codex` (PATH). | (optional) |
+| `CCDB_CODEX_WORKSPACES` | JSON object mapping safe workspace names to absolute `CODEX_HOME` directories. Enables `/codex-workspace`; paths are configuration-only and never accepted from Discord. | (disabled) |
+| `CCDB_CODEX_WORKSPACE` | Initial named Codex workspace before a persisted global selection exists. Defaults to the first configured name. | first configured |
 | `PATH` | Binary search path for the bot **and every CLI session it spawns** — sessions inherit the bot's environment. Set it in `.env` when running under systemd, which starts units with a minimal PATH and never reads `~/.bashrc` / `~/.profile`. See [Toolchain PATH](#toolchain-path--set-it-in-env). | (inherited from the parent process) |
 | `CCDB_MODEL` | Model to use (overrides `CLAUDE_MODEL`) | `sonnet` |
 | `CCDB_MODEL_DISCOVERY` | Set to `0` to stop the `/model` autocomplete from asking the Anthropic models endpoint which models your credentials can see, and always use the static suggestion list instead. Discovery is read-only, reuses the Claude Code CLI's own auth, and already falls back on its own when offline, unauthenticated, or on Bedrock/Vertex/Foundry | `1` |

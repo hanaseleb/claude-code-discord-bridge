@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -104,6 +105,8 @@ async def setup_bridge(
     thread_context_days: int | None = None,
     context_links_config: str | None = None,
     backend_factory: BackendFactory | None = None,
+    codex_workspaces: Mapping[str, str] | None = None,
+    codex_workspace: str | None = None,
 ) -> BridgeComponents:
     """Initialize and register all ccdb Cogs in one call.
 
@@ -319,6 +322,17 @@ async def setup_bridge(
     backend_settings: BackendSettings | None = None
     if backend_factory is not None:
         from .backend_settings import BackendSettings
+        from .codex_workspaces import parse_codex_workspaces
+
+        if codex_workspaces is None:
+            configured_codex_workspaces = parse_codex_workspaces(
+                os.getenv("CCDB_CODEX_WORKSPACES", "")
+            )
+        else:
+            import json
+
+            configured_codex_workspaces = parse_codex_workspaces(json.dumps(dict(codex_workspaces)))
+        configured_default_workspace = codex_workspace or os.getenv("CCDB_CODEX_WORKSPACE", "")
 
         _runner_class = runner.__class__.__name__
         backend_settings = BackendSettings(
@@ -326,7 +340,13 @@ async def setup_bridge(
             env_backend=_runner_class.replace("Runner", "").lower(),
             env_model_for_claude=(runner.model if _runner_class == "ClaudeRunner" else ""),
             env_model_for_codex=(runner.model if _runner_class == "CodexRunner" else ""),
+            codex_workspaces=configured_codex_workspaces,
+            env_codex_workspace=configured_default_workspace or None,
         )
+        if _runner_class == "CodexRunner":
+            selected_workspace = await backend_settings.current_codex_workspace()
+            runner.codex_workspace = selected_workspace  # type: ignore[attr-defined]
+            runner.codex_home = backend_settings.codex_home(selected_workspace)  # type: ignore[attr-defined]
 
     chat_cog = ClaudeChatCog(
         bot,  # type: ignore[arg-type]  # consumers pass their own Bot subclass

@@ -19,6 +19,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import shlex
 import time
 from collections.abc import Awaitable, Callable
@@ -41,6 +42,8 @@ _FAIL_TTL = 30.0
 async def fetch_codex_rate_limits(
     codex_command: str = "codex",
     timeout: float = _DEFAULT_TIMEOUT,
+    *,
+    codex_home: str | None = None,
 ) -> dict | None:
     """Return the raw ``account/rateLimits/read`` result, or ``None`` on failure.
 
@@ -58,12 +61,24 @@ async def fetch_codex_rate_limits(
         parts = ["codex"]
 
     try:
+        env = os.environ.copy()
+        for secret_name in (
+            "DISCORD_BOT_TOKEN",
+            "DISCORD_TOKEN",
+            "API_SECRET",
+            "API_SECRET_KEY",
+            "CCDB_API_SECRET",
+        ):
+            env.pop(secret_name, None)
+        if codex_home is not None:
+            env["CODEX_HOME"] = codex_home
         proc = await asyncio.create_subprocess_exec(
             *parts,
             "app-server",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=env,
         )
     except (OSError, ValueError):
         logger.debug("Failed to spawn codex app-server", exc_info=True)
@@ -167,15 +182,19 @@ class CodexStatusProvider:
         self,
         codex_command: str = "codex",
         *,
+        codex_home: str | None = None,
         ttl: float = _DEFAULT_TTL,
         fail_ttl: float = _FAIL_TTL,
         fetcher: Callable[[str], Awaitable[dict | None]] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._command = codex_command
+        self._codex_home = codex_home
         self._ttl = ttl
         self._fail_ttl = fail_ttl
-        self._fetcher = fetcher or (lambda cmd: fetch_codex_rate_limits(cmd))
+        self._fetcher = fetcher or (
+            lambda cmd: fetch_codex_rate_limits(cmd, codex_home=self._codex_home)
+        )
         self._clock = clock
         self._cached_line: str | None = None
         self._cached_at: float | None = None
@@ -203,17 +222,20 @@ class CodexStatusProvider:
 
 # Module-level provider registry keyed by codex command so a single cache is
 # shared across all turns/threads for a given command.
-_PROVIDERS: dict[str, CodexStatusProvider] = {}
+_PROVIDERS: dict[tuple[str, str | None], CodexStatusProvider] = {}
 
 
-def _provider_for(codex_command: str) -> CodexStatusProvider:
-    prov = _PROVIDERS.get(codex_command)
+def _provider_for(codex_command: str, codex_home: str | None) -> CodexStatusProvider:
+    key = (codex_command, codex_home)
+    prov = _PROVIDERS.get(key)
     if prov is None:
-        prov = CodexStatusProvider(codex_command)
-        _PROVIDERS[codex_command] = prov
+        prov = CodexStatusProvider(codex_command, codex_home=codex_home)
+        _PROVIDERS[key] = prov
     return prov
 
 
-async def get_codex_status_line(codex_command: str = "codex") -> str | None:
+async def get_codex_status_line(
+    codex_command: str = "codex", *, codex_home: str | None = None
+) -> str | None:
     """Convenience entry point used by the per-turn footer (cached)."""
-    return await _provider_for(codex_command).get_line()
+    return await _provider_for(codex_command, codex_home).get_line()

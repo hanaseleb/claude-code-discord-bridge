@@ -105,6 +105,8 @@ _MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN summary TEXT",
     # Which CLI produced this session ID (claude / codex) — see claude_code_core.models.
     "ALTER TABLE sessions ADD COLUMN backend TEXT",
+    # Named CODEX_HOME that produced a Codex session ID.
+    "ALTER TABLE sessions ADD COLUMN codex_workspace TEXT",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_session_id ON sessions(session_id)",
     # Lounge table added in v1.x — safe to run on existing DBs
     (

@@ -36,7 +36,20 @@ async def build_headless_runner(
     if factory is not None and settings is not None:
         backend = await settings.current_backend(thread_id)
         model = await settings.current_model(backend, thread_id)
-        runner = factory.build(backend=backend, model=model, thread_id=thread_id)
+        build_kwargs: dict[str, Any] = {
+            "backend": backend,
+            "model": model,
+            "thread_id": thread_id,
+        }
+        # Runtime settings are BackendSettings. Keep compatibility with small
+        # settings stubs used by extensions and older integrations.
+        from ..backend_settings import BackendSettings
+
+        if backend == "codex" and isinstance(settings, BackendSettings):
+            codex_workspace = await settings.current_codex_workspace(thread_id)
+            build_kwargs["codex_workspace"] = codex_workspace
+            build_kwargs["codex_home"] = settings.codex_home(codex_workspace)
+        runner = factory.build(**build_kwargs)
         effort = await settings.current_effort(backend, thread_id)
         if effort is not None and hasattr(runner, "effort"):
             runner.effort = effort  # type: ignore[attr-defined]

@@ -104,6 +104,56 @@ class TestResolution:
         assert await s.current_backend(thread_id=7) == "claude"
 
 
+class TestCodexWorkspaceResolution:
+    async def _settings(self) -> BackendSettings:
+        repo, _ = await _new_repo()
+        return BackendSettings(
+            repo,
+            env_backend="codex",
+            env_model_for_claude="",
+            env_model_for_codex="",
+            codex_workspaces={
+                "personal": "/srv/codex/personal",
+                "business": "/srv/codex/business",
+            },
+            env_codex_workspace="personal",
+        )
+
+    async def test_environment_default_and_home_lookup(self) -> None:
+        settings = await self._settings()
+
+        assert await settings.current_codex_workspace() == "personal"
+        assert settings.codex_home("business") == "/srv/codex/business"
+        assert settings.available_codex_workspaces == ("personal", "business")
+
+    async def test_thread_override_wins_over_global(self) -> None:
+        settings = await self._settings()
+        await settings.set_codex_workspace("business")
+        await settings.set_codex_workspace("personal", thread_id=42)
+
+        assert await settings.current_codex_workspace() == "business"
+        assert await settings.current_codex_workspace(thread_id=42) == "personal"
+
+    async def test_rejects_unconfigured_workspace(self) -> None:
+        settings = await self._settings()
+
+        with pytest.raises(ValueError, match="unknown Codex workspace"):
+            await settings.set_codex_workspace("attacker-path")
+
+    async def test_rejects_unknown_environment_default(self) -> None:
+        repo, _ = await _new_repo()
+
+        with pytest.raises(ValueError, match="CCDB_CODEX_WORKSPACE"):
+            BackendSettings(
+                repo,
+                env_backend="codex",
+                env_model_for_claude="",
+                env_model_for_codex="",
+                codex_workspaces={"personal": "/srv/codex/personal"},
+                env_codex_workspace="missing",
+            )
+
+
 class TestCodexStatusMode:
     async def _settings(self) -> BackendSettings:
         repo, _ = await _new_repo()

@@ -12,6 +12,7 @@ Resolution order for any field:
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -29,6 +30,8 @@ MODEL_GLOBAL_PREFIX = "model.global."  # + backend
 MODEL_THREAD_PREFIX = "model.thread."  # + thread_id + "." + backend
 EFFORT_GLOBAL_PREFIX = "effort.global."  # + backend
 EFFORT_THREAD_PREFIX = "effort.thread."  # + thread_id + "." + backend
+CODEX_WORKSPACE_GLOBAL = "workspace.codex.global"
+CODEX_WORKSPACE_THREAD_PREFIX = "workspace.codex.thread."  # + thread_id
 
 # Codex status footer toggle (2-layer: global default + per-thread override).
 #   "auto" — show the Codex status line only when it can actually be fetched
@@ -41,7 +44,12 @@ CODEX_STATUS_MODES = ("auto", "on", "off")
 CODEX_STATUS_DEFAULT = "auto"
 
 
-def session_is_resumable(stored_backend: str | None, current_backend: str) -> bool:
+def session_is_resumable(
+    stored_backend: str | None,
+    current_backend: str,
+    stored_codex_workspace: str | None = None,
+    current_codex_workspace: str | None = None,
+) -> bool:
     """Can ``current_backend`` resume a session ID minted by ``stored_backend``?
 
     Claude and Codex keep separate session stores, so handing a Codex rollout ID
@@ -51,7 +59,11 @@ def session_is_resumable(stored_backend: str | None, current_backend: str) -> bo
     """
     if not stored_backend:
         return True
-    return stored_backend == current_backend
+    if stored_backend != current_backend:
+        return False
+    if current_backend == "codex" and current_codex_workspace is not None:
+        return stored_codex_workspace == current_codex_workspace
+    return True
 
 
 class BackendSettings:
@@ -64,6 +76,8 @@ class BackendSettings:
         env_backend: str,
         env_model_for_claude: str,
         env_model_for_codex: str,
+        codex_workspaces: Mapping[str, str] | None = None,
+        env_codex_workspace: str | None = None,
     ) -> None:
         self.repo = repo
         self._env_backend = env_backend if env_backend in ALL_BACKENDS else "claude"
@@ -71,6 +85,27 @@ class BackendSettings:
             "claude": env_model_for_claude or "",
             "codex": env_model_for_codex or "",
         }
+        self._codex_workspaces = dict(codex_workspaces or {})
+        if env_codex_workspace and env_codex_workspace not in self._codex_workspaces:
+            raise ValueError(
+                f"CCDB_CODEX_WORKSPACE {env_codex_workspace!r} is not present "
+                "in CCDB_CODEX_WORKSPACES"
+            )
+        if env_codex_workspace:
+            self._env_codex_workspace = env_codex_workspace
+        else:
+            self._env_codex_workspace = next(iter(self._codex_workspaces), None)
+
+    @property
+    def available_codex_workspaces(self) -> tuple[str, ...]:
+        """Configured workspace names in administrator-defined order."""
+        return tuple(self._codex_workspaces)
+
+    def codex_home(self, workspace: str | None) -> str | None:
+        """Return the configured CODEX_HOME for a workspace name."""
+        if workspace is None:
+            return None
+        return self._codex_workspaces.get(workspace)
 
     # ── Resolution ──────────────────────────────────────────
 
@@ -137,6 +172,19 @@ class BackendSettings:
         v = await self.repo.get(f"{EFFORT_GLOBAL_PREFIX}{backend}")
         return v if v else None
 
+    async def current_codex_workspace(self, thread_id: int | None = None) -> str | None:
+        """Return the named Codex workspace for this thread, or None if disabled."""
+        if not self._codex_workspaces:
+            return None
+        if thread_id is not None:
+            value = await self.repo.get(f"{CODEX_WORKSPACE_THREAD_PREFIX}{thread_id}")
+            if value in self._codex_workspaces:
+                return value
+        value = await self.repo.get(CODEX_WORKSPACE_GLOBAL)
+        if value in self._codex_workspaces:
+            return value
+        return self._env_codex_workspace
+
     async def codex_status_mode(self, thread_id: int | None = None) -> str:
         """Return the Codex status footer mode for this thread (or globally).
 
@@ -162,6 +210,17 @@ class BackendSettings:
         else:
             await self.repo.set(CODEX_STATUS_GLOBAL, mode)
             logger.info("codex status set: global -> %s", mode)
+
+    async def set_codex_workspace(self, workspace: str, *, thread_id: int | None = None) -> None:
+        """Persist a preconfigured workspace name without accepting paths."""
+        if workspace not in self._codex_workspaces:
+            raise ValueError(f"unknown Codex workspace {workspace!r}")
+        if thread_id is not None:
+            await self.repo.set(f"{CODEX_WORKSPACE_THREAD_PREFIX}{thread_id}", workspace)
+            logger.info("Codex workspace set: thread=%d -> %s", thread_id, workspace)
+        else:
+            await self.repo.set(CODEX_WORKSPACE_GLOBAL, workspace)
+            logger.info("Codex workspace set: global -> %s", workspace)
 
     async def set_backend(self, backend: str, *, thread_id: int | None = None) -> None:
         if backend not in ALL_BACKENDS:
@@ -216,5 +275,7 @@ class BackendSettings:
             if await self.repo.delete(f"{EFFORT_THREAD_PREFIX}{thread_id}.{b}"):
                 deleted += 1
         if await self.repo.delete(f"{CODEX_STATUS_THREAD_PREFIX}{thread_id}"):
+            deleted += 1
+        if await self.repo.delete(f"{CODEX_WORKSPACE_THREAD_PREFIX}{thread_id}"):
             deleted += 1
         return deleted

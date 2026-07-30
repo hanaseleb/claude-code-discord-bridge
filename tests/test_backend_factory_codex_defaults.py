@@ -61,3 +61,26 @@ class TestEnvEffortDoesNotLeakToCodex:
         runner = _factory(effort="max").build(backend="codex")
         assert isinstance(runner, CodexRunner)
         assert runner.effort is None
+
+
+class TestCodexWorkspaceForwarding:
+    def test_codex_workspace_is_forwarded_to_runner(self) -> None:
+        runner = _factory().build(
+            backend="codex",
+            codex_home="/srv/codex/business",
+            codex_workspace="business",
+        )
+
+        assert isinstance(runner, CodexRunner)
+        assert runner.codex_home == "/srv/codex/business"
+        assert runner.codex_workspace == "business"
+
+    def test_claude_ignores_codex_workspace(self) -> None:
+        runner = _factory().build(
+            backend="claude",
+            codex_home="/srv/codex/business",
+            codex_workspace="business",
+        )
+
+        assert isinstance(runner, ClaudeRunner)
+        assert not hasattr(runner, "codex_home")
