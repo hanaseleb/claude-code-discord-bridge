@@ -20,7 +20,7 @@ import re
 import uuid
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from .types import (
     ImageData,
@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 
 _UNSET = object()
 VALID_COPILOT_EFFORTS: frozenset[str] = frozenset({"low", "medium", "high", "xhigh"})
+VALID_COPILOT_AGENT_MODES: frozenset[str] = frozenset({"interactive", "autopilot"})
+CopilotAgentMode = Literal["interactive", "autopilot"]
 _SESSION_ID_RE = re.compile(r"^[a-f0-9-]+$")
 
 
@@ -232,6 +234,7 @@ class CopilotRunner:
         append_system_prompt: str | None = None,
         images: list[ImageData] | None = None,
         effort: str | None = None,
+        agent_mode: str = "interactive",
         **_kwargs: object,
     ) -> None:
         self.command = command
@@ -247,6 +250,7 @@ class CopilotRunner:
         self.append_system_prompt = append_system_prompt
         self.images = images
         self.effort = effort
+        self.agent_mode = agent_mode
         self._client: Any | None = None
         self._session: Any | None = None
         self._event_queue: asyncio.Queue[StreamEvent | None] | None = None
@@ -282,6 +286,7 @@ class CopilotRunner:
             ),
             images=self.images,
             effort=self.effort if effort is _UNSET else effort,  # type: ignore[arg-type]
+            agent_mode=cast(CopilotAgentMode, self.agent_mode),
         )
 
     async def run(
@@ -329,6 +334,18 @@ class CopilotRunner:
                 error=(
                     f"Invalid Copilot effort {self.effort!r}; choose one of "
                     f"{', '.join(sorted(VALID_COPILOT_EFFORTS))}"
+                ),
+            )
+            return
+
+        if self.agent_mode not in VALID_COPILOT_AGENT_MODES:
+            yield StreamEvent(
+                raw={},
+                message_type=MessageType.RESULT,
+                is_complete=True,
+                error=(
+                    f"Invalid Copilot agent mode {self.agent_mode!r}; choose one of "
+                    f"{', '.join(sorted(VALID_COPILOT_AGENT_MODES))}"
                 ),
             )
             return
@@ -424,6 +441,7 @@ class CopilotRunner:
                 await session.send_and_wait(
                     prompt,
                     attachments=attachments or None,
+                    agent_mode=cast(CopilotAgentMode, self.agent_mode),
                     timeout=float(self.timeout_seconds),
                 )
                 if not terminal_seen:

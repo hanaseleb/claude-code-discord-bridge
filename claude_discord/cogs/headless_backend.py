@@ -40,6 +40,8 @@ async def build_headless_runner(
         effort = await settings.current_effort(backend, thread_id)
         if effort is not None and hasattr(runner, "effort"):
             runner.effort = effort  # type: ignore[attr-defined]
+        if backend == "copilot" and hasattr(runner, "agent_mode"):
+            runner.agent_mode = await settings.copilot_mode(thread_id)  # type: ignore[attr-defined]
     else:
         runner = base_runner.clone(thread_id=thread_id)
 

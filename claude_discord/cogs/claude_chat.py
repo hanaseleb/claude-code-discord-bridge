@@ -77,6 +77,7 @@ _HELP_CATEGORY: dict[str, str | None] = {
     "sync-settings": "📌 Session",
     "model": "🤖 Model",
     "backend": "🤖 Model",
+    "copilot-mode": "🤖 Model",
     "engine-status": "🤖 Model",
     "effort": "⚡ Effort",
     "tools-show": "🔧 Advanced",
@@ -368,6 +369,9 @@ class ClaudeChatCog(commands.Cog):
             effective_effort = effort_override
         if effective_effort is not None and hasattr(runner, "effort"):
             runner.effort = effective_effort  # type: ignore[attr-defined]
+
+        if backend == "copilot" and hasattr(runner, "agent_mode"):
+            runner.agent_mode = await self._backend_settings.copilot_mode(thread_id)  # type: ignore[attr-defined]
 
         if fork_session and hasattr(runner, "fork_session"):
             runner.fork_session = True  # type: ignore[attr-defined]

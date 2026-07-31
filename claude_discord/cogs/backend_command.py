@@ -13,7 +13,7 @@ follow-up).
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import discord
 from discord import app_commands
@@ -27,6 +27,8 @@ from ..backend_settings import (
     ALL_BACKENDS,
     CODEX_STATUS_DEFAULT,
     CODEX_STATUS_MODES,
+    COPILOT_MODE_DEFAULT,
+    COPILOT_MODES,
     BackendSettings,
 )
 from ..model_catalog import claude_model_choices
@@ -504,6 +506,77 @@ class BackendCommandCog(commands.Cog):
     def _effort_label(effort: str | None) -> str:
         """Human-readable effort label; ``None`` means the backend CLI's default."""
         return f"`{effort}`" if effort else "_(CLI default)_"
+
+    # ── /copilot-mode ──────────────────────────────────────────────
+
+    @app_commands.command(
+        name="copilot-mode",
+        description="Show or set GitHub Copilot's startup agent mode",
+    )
+    @app_commands.choices(
+        mode=[Choice(name=m, value=m) for m in COPILOT_MODES],
+        scope=[
+            Choice(name="thread", value=SCOPE_THREAD),
+            Choice(name="global", value=SCOPE_GLOBAL),
+        ],
+    )
+    @app_commands.describe(
+        mode=(
+            "interactive: one reply; autopilot: continue until task completion. "
+            "Omit to show current."
+        ),
+        scope=(
+            "thread: this thread; global: server default. "
+            "Defaults to current thread, otherwise global."
+        ),
+    )
+    async def copilot_mode_command(
+        self,
+        interaction: discord.Interaction,
+        mode: str | None = None,
+        scope: str | None = None,
+    ) -> None:
+        thread_id_now = self._thread_id_or_none(interaction)
+
+        if mode is None:
+            current_global = await self._settings.copilot_mode(None)
+            lines = [f"💻 **Global Copilot mode**: `{current_global}`"]
+            if thread_id_now is not None:
+                current_thread = await self._settings.copilot_mode(thread_id_now)
+                tag = " (thread override)" if current_thread != current_global else ""
+                lines.append(f"🟠 **This thread**: `{current_thread}`{tag}")
+            lines.append(f"-# Default: `{COPILOT_MODE_DEFAULT}`.")
+            await interaction.response.send_message("\n".join(lines), ephemeral=True)
+            return
+
+        if mode not in COPILOT_MODES:
+            await interaction.response.send_message(
+                f"Unknown mode `{mode}`. Choose: {', '.join(COPILOT_MODES)}.",
+                ephemeral=True,
+            )
+            return
+
+        resolved_scope, target_thread_id = self._resolve_scope(interaction, scope)
+        if resolved_scope == SCOPE_THREAD and target_thread_id is None:
+            await interaction.response.send_message(
+                "`scope:thread` requires the command to be run inside a thread.",
+                ephemeral=True,
+            )
+            return
+
+        await self._settings.set_copilot_mode(mode, thread_id=target_thread_id)
+        if resolved_scope == SCOPE_GLOBAL and hasattr(self._chat_cog.runner, "agent_mode"):
+            cast(Any, self._chat_cog.runner).agent_mode = mode
+
+        scope_label = (
+            f"<#{target_thread_id}>"
+            if resolved_scope == SCOPE_THREAD and target_thread_id is not None
+            else "**globally**"
+        )
+        await interaction.response.send_message(
+            f"💻 Copilot mode set to `{mode}` {scope_label}. Next Copilot turn will use it.",
+            ephemeral=False,
+        )
 
     # ── /engine-status ─────────────────────────────────────────────
 

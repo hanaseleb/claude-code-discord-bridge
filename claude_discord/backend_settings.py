@@ -29,6 +29,10 @@ MODEL_GLOBAL_PREFIX = "model.global."  # + backend
 MODEL_THREAD_PREFIX = "model.thread."  # + thread_id + "." + backend
 EFFORT_GLOBAL_PREFIX = "effort.global."  # + backend
 EFFORT_THREAD_PREFIX = "effort.thread."  # + thread_id + "." + backend
+COPILOT_MODE_GLOBAL = "mode.copilot.global"
+COPILOT_MODE_THREAD_PREFIX = "mode.copilot.thread."  # + thread_id
+COPILOT_MODES = ("interactive", "autopilot")
+COPILOT_MODE_DEFAULT = "interactive"
 
 # Codex status footer toggle (2-layer: global default + per-thread override).
 #   "auto" — show the Codex status line only when it can actually be fetched
@@ -155,6 +159,17 @@ class BackendSettings:
             return v
         return CODEX_STATUS_DEFAULT
 
+    async def copilot_mode(self, thread_id: int | None = None) -> str:
+        """Return Copilot's agent mode (thread override > global > interactive)."""
+        if thread_id is not None:
+            value = await self.repo.get(f"{COPILOT_MODE_THREAD_PREFIX}{thread_id}")
+            if value in COPILOT_MODES:
+                return value
+        value = await self.repo.get(COPILOT_MODE_GLOBAL)
+        if value in COPILOT_MODES:
+            return value
+        return COPILOT_MODE_DEFAULT
+
     # ── Mutation ────────────────────────────────────────────
 
     async def set_codex_status_mode(self, mode: str, *, thread_id: int | None = None) -> None:
@@ -166,6 +181,16 @@ class BackendSettings:
         else:
             await self.repo.set(CODEX_STATUS_GLOBAL, mode)
             logger.info("codex status set: global -> %s", mode)
+
+    async def set_copilot_mode(self, mode: str, *, thread_id: int | None = None) -> None:
+        if mode not in COPILOT_MODES:
+            raise ValueError(f"unknown Copilot mode {mode!r}")
+        if thread_id is not None:
+            await self.repo.set(f"{COPILOT_MODE_THREAD_PREFIX}{thread_id}", mode)
+            logger.info("Copilot mode set: thread=%d -> %s", thread_id, mode)
+        else:
+            await self.repo.set(COPILOT_MODE_GLOBAL, mode)
+            logger.info("Copilot mode set: global -> %s", mode)
 
     async def set_backend(self, backend: str, *, thread_id: int | None = None) -> None:
         if backend not in ALL_BACKENDS:
@@ -220,5 +245,7 @@ class BackendSettings:
             if await self.repo.delete(f"{EFFORT_THREAD_PREFIX}{thread_id}.{b}"):
                 deleted += 1
         if await self.repo.delete(f"{CODEX_STATUS_THREAD_PREFIX}{thread_id}"):
+            deleted += 1
+        if await self.repo.delete(f"{COPILOT_MODE_THREAD_PREFIX}{thread_id}"):
             deleted += 1
         return deleted

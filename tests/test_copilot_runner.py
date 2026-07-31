@@ -169,6 +169,7 @@ class TestCopilotRunner:
             model="gpt-5.4",
             working_dir="/tmp/project",
             effort="high",
+            agent_mode="autopilot",
             thread_id=42,
         )
 
@@ -178,6 +179,7 @@ class TestCopilotRunner:
         assert clone.model == "claude-sonnet-4.6"
         assert clone.working_dir == "/tmp/project"
         assert clone.effort == "high"
+        assert clone.agent_mode == "autopilot"
         assert clone.thread_id == 42
 
     def test_build_env_injects_ccdb_context_and_strips_discord_token(
@@ -206,6 +208,15 @@ class TestCopilotRunner:
         assert events[0].is_complete is True
         assert events[0].error == "Invalid GitHub Copilot session ID"
 
+    async def test_rejects_invalid_agent_mode_before_sdk_start(self) -> None:
+        events = [event async for event in CopilotRunner(agent_mode="reckless").run("hello")]
+
+        assert len(events) == 1
+        assert events[0].is_complete is True
+        assert events[0].error == (
+            "Invalid Copilot agent mode 'reckless'; choose one of autopilot, interactive"
+        )
+
     async def test_run_streams_sdk_session_events(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -216,9 +227,11 @@ class TestCopilotRunner:
             def __init__(self, options: dict[str, object]) -> None:
                 self.options = options
                 self.disconnected = False
+                self.agent_mode: str | None = None
 
-            async def send_and_wait(self, prompt: str, **_kwargs: object) -> None:
+            async def send_and_wait(self, prompt: str, **kwargs: object) -> None:
                 assert prompt == "hello"
+                self.agent_mode = kwargs.get("agent_mode")  # type: ignore[assignment]
                 on_event = self.options["on_event"]
                 assert callable(on_event)
                 on_event(_event("assistant.message", message_id="m1", content="Hi"))
@@ -275,7 +288,7 @@ class TestCopilotRunner:
         monkeypatch.setitem(sys.modules, "copilot.generated", generated_module)
         monkeypatch.setitem(sys.modules, "copilot.generated.rpc", rpc_module)
 
-        events = [event async for event in CopilotRunner().run("hello")]
+        events = [event async for event in CopilotRunner(agent_mode="autopilot").run("hello")]
 
         assert [event.message_type for event in events] == [
             MessageType.SYSTEM,
@@ -291,6 +304,7 @@ class TestCopilotRunner:
         assert client.started is True
         assert client.stopped is True
         assert client.session is not None and client.session.disconnected is True
+        assert client.session.agent_mode == "autopilot"
 
     async def test_permission_waiter_is_resolved_by_discord_injection(self) -> None:
         runner = CopilotRunner()
