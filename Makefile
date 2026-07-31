@@ -45,12 +45,14 @@ pr:
 
 # Enable dev mode: EbiBot loads claude_discord from this worktree on next restart.
 dev-on:
-	@echo "$$(pwd)" > $(HOME)/.ccdb-dev-worktree
-	@echo "Dev mode ON — loading from $$(pwd)"
-	sudo systemctl restart discord-bot
+	@BASE_REPO=$$(dirname "$$(git rev-parse --path-format=absolute --git-common-dir)"); \
+	"$$BASE_REPO/.venv/bin/python" "$$(pwd)/scripts/install_dev_hook.py"; \
+	echo "$$(pwd)" > $(HOME)/.ccdb-dev-worktree
+	@echo "Dev mode ON — loading claude_discord and claude_code_core from $$(pwd)"
+	sudo systemctl restart $${CCDB_SERVICE_NAME:-claude-discord-bot}
 
 # Disable dev mode: EbiBot goes back to main tree on next restart.
 dev-off:
 	@rm -f $(HOME)/.ccdb-dev-worktree
 	@echo "Dev mode OFF — back to main tree"
-	sudo systemctl restart discord-bot
+	sudo systemctl restart $${CCDB_SERVICE_NAME:-claude-discord-bot}

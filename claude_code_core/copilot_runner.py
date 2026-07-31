@@ -5,9 +5,9 @@ runner adapts those events to ccdb's backend-neutral ``StreamEvent`` protocol so
 the Discord UI, session persistence, Lounge, permissions, and stop button work
 the same way as the Claude and Codex backends.
 
-``github-copilot-sdk`` is intentionally imported lazily.  It requires Python
-3.11+, while ccdb's Claude/Codex-only installation still supports Python 3.10.
-Install the ``copilot`` extra to enable this backend.
+``github-copilot-sdk`` is intentionally imported lazily. It is installed on
+Python 3.11+, while ccdb's Claude/Codex-only runtime remains importable on
+Python 3.10.
 """
 
 from __future__ import annotations
@@ -314,9 +314,9 @@ class CopilotRunner:
                 message_type=MessageType.RESULT,
                 is_complete=True,
                 error=(
-                    "GitHub Copilot backend is not installed. "
-                    "Install ccdb with the 'copilot' extra (for example: "
-                    "`uv sync --extra copilot`) on Python 3.11 or newer."
+                    "GitHub Copilot requires Python 3.11 or newer and the "
+                    "github-copilot-sdk dependency. Upgrade the ccdb environment "
+                    "(for example with `uv sync`) and try again."
                 ),
             )
             return

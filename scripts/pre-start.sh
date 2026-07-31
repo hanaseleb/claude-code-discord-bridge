@@ -67,48 +67,9 @@ COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 echo "[pre-start] Code at: ${COMMIT}" >&2
 
 # ── Step 2b: Install dev worktree import hook ──
-# The hook intercepts claude_discord imports via sys.meta_path and redirects them
-# to ~/.ccdb-dev-worktree when that file exists. Uses sys.meta_path (not sys.path)
-# to override python -m's CWD-first resolution.
-# The hook files are created here so they survive venv recreation (uv sync --reinstall).
-for SITE_PKG in "$CCDB_HOME"/.venv/lib/python*/site-packages; do
-    # Install the import hook module
-    cat > "$SITE_PKG/_ccdb_dev_hook.py" << 'HOOK_EOF'
-"""Dev worktree import hook — redirects claude_discord & claude_code_core to ~/.ccdb-dev-worktree."""
-import sys, os, importlib.util
-
-_TARGETS = ("claude_discord", "claude_code_core")
-
-def _install():
-    dev_file = os.path.expanduser("~/.ccdb-dev-worktree")
-    if not os.path.exists(dev_file):
-        return
-    with open(dev_file) as f:
-        worktree = f.read().strip()
-    if not any(os.path.isdir(os.path.join(worktree, t)) for t in _TARGETS):
-        return
-    class _Finder:
-        def find_spec(self, fullname, path, target=None):
-            root = fullname.split(".", 1)[0]
-            if root not in _TARGETS:
-                return None
-            parts = fullname.split(".")
-            pkg = os.path.join(worktree, *parts)
-            if os.path.isdir(pkg):
-                init = os.path.join(pkg, "__init__.py")
-                if os.path.exists(init):
-                    return importlib.util.spec_from_file_location(fullname, init, submodule_search_locations=[pkg])
-            mod = pkg + ".py"
-            if os.path.exists(mod):
-                return importlib.util.spec_from_file_location(fullname, mod)
-            return None
-    sys.meta_path.insert(0, _Finder())
-
-_install()
-HOOK_EOF
-    # Activate the hook via .pth (runs on Python startup, before any user code)
-    echo "import _ccdb_dev_hook" > "$SITE_PKG/_ccdb_dev_hook.pth"
-done
+# Refresh it after every sync so an old venv hook can never mix packages from
+# main and a feature worktree.
+"$CCDB_HOME/.venv/bin/python" "$CCDB_HOME/scripts/install_dev_hook.py"
 
 if [ -f "$HOME/.ccdb-dev-worktree" ]; then
     echo "[pre-start] Dev worktree mode: $(cat "$HOME/.ccdb-dev-worktree")" >&2

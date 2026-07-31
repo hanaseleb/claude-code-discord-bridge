@@ -448,7 +448,7 @@ Behind the scenes:
 - At least one of:
   - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — installed and authenticated (`claude login`). Recommended for Anthropic Pro/Max subscribers.
   - [OpenAI Codex CLI](https://github.com/openai/codex) — `npm install -g @openai/codex` then `codex login`. Uses your existing ChatGPT Plus/Pro/Business subscription.
-  - [GitHub Copilot SDK](https://github.com/github/copilot-sdk) — Python 3.11+ and an active Copilot plan. Install ccdb with the `copilot` extra, then use a token or a login created by the standalone GitHub Copilot CLI.
+  - [GitHub Copilot SDK](https://github.com/github/copilot-sdk) — Python 3.11+ and an active Copilot plan. The SDK is installed automatically on supported Python versions; use a token or a login created by the standalone GitHub Copilot CLI.
 - You can install any combination and switch at runtime with `/backend`.
 
 **Platform support:** Primarily developed and tested on **Linux**. macOS and Windows are supported and pass CI, but receive less real-world testing — bug reports welcome.
@@ -864,11 +864,11 @@ Claude Code's agent runtime to ccdb.
 
 ### Using the GitHub Copilot backend
 
-Copilot support is optional because the official SDK requires Python 3.11 or
-newer. Install the extra in the same environment that runs ccdb:
+The official Copilot SDK requires Python 3.11 or newer. It is part of ccdb's
+standard dependencies on supported Python versions:
 
 ```bash
-uv sync --extra copilot
+uv sync
 ```
 
 For a headless service, provide a fine-grained token with the **Copilot
