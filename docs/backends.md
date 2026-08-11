@@ -11,6 +11,7 @@ Teams app.
 |---|---|---|---|
 | Claude Code | local `claude` CLI | the CLI's existing login | Claude-native coding workflows |
 | OpenAI Codex | local `codex` CLI | the CLI's existing login | Codex coding and review workflows |
+| Z.ai | local `claude` CLI, pointed at Z.ai's Anthropic-compatible endpoint | a dedicated Z.ai credential file | GLM models through the same CLI, without touching direct Anthropic credentials |
 | Local | local `codex` CLI to an OpenAI-compatible `/v1/responses` endpoint | none by default | data that should stay on a controlled network |
 | AG-UI | HTTP request plus JSON server-sent events | optional bearer token | custom and hosted agents that implement AG-UI |
 | pi | local `pi` CLI | the CLI's own login or an API key | one agent over many providers, including subscriptions and local servers |
@@ -31,6 +32,7 @@ On Discord, switch an individual conversation without restarting:
 ```text
 /backend claude
 /backend codex
+/backend zai
 /backend local
 /backend agui
 /backend pi
@@ -58,6 +60,25 @@ ccdb start
 
 The default backend remains `claude`, so upgrading an existing deployment does not change which
 agent receives the next turn.
+
+## Z.ai
+
+Z.ai serves the Anthropic Messages API, so the same Claude Code CLI runs against it unchanged once
+the subprocess environment points at Z.ai — no separate CLI, no code changes.
+
+```dotenv
+CCDB_ZAI_ENV_FILE=/home/you/.ccdb/zai.env
+CCDB_ZAI_MODEL=glm-5.2
+```
+
+`CCDB_ZAI_ENV_FILE` is a dedicated `KEY=VALUE` file holding the Z.ai credentials
+(`ANTHROPIC_AUTH_TOKEN` and, if your account needs it, a regional `ANTHROPIC_BASE_URL`). Keep it
+separate from any file used by `CCDB_CLI_ENV_FILE`: before applying it, ccdb pops
+`ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the subprocess environment, so a Z.ai thread
+never inherits — or silently falls back to — direct Anthropic credentials. Title-suggestion calls
+pick a GLM model rather than an Anthropic alias, since Z.ai does not serve `haiku`.
+
+Then set `CCDB_BACKEND=zai`, or enter `/backend zai` in Discord.
 
 ## Local
 
@@ -139,7 +160,8 @@ Discord can set per-conversation overrides; Teams consumes the configured/global
 deployment can therefore run, for example:
 
 - a Discord thread on Claude Code;
-- another Discord thread on a local model;
+- another Discord thread on Z.ai's GLM models;
+- a third Discord thread on a local model;
 - Teams conversations on the configured Codex default; or
 - Teams conversations on an internal AG-UI agent when AG-UI is the configured/global backend.
 
@@ -150,7 +172,7 @@ posted into a Discord thread with a numerically similar key.
 ## Security boundary
 
 Every selected backend receives that conversation's prompts and attachments. Treat a remote AG-UI
-endpoint or local model host as part of the data-processing path. A customer-tenant Teams app does
+endpoint, Z.ai, or local model host as part of the data-processing path. A customer-tenant Teams app does
 not by itself keep data inside that tenant: messages still travel through Bot Framework, the public
 receiver, the queue, the private session host, and the selected backend. Deploy the complete stack
 inside the required boundary when the contract requires that literal property.
