@@ -77,6 +77,51 @@ class TestSuggestTitleNormal:
         assert args[model_idx + 1] == "haiku"
 
     @pytest.mark.asyncio
+    async def test_codex_uses_exec_with_safe_one_shot_options(self):
+        proc = _make_proc(b"Codex title\n")
+        with patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
+            result = await suggest_title(
+                "some request",
+                claude_command="/usr/local/bin/codex",
+                backend="codex",
+                model="gpt-5.6-sol",
+                cwd="/workspace",
+            )
+
+        assert result == "Codex title"
+        args = mock_exec.call_args.args
+        assert args[:2] == ("/usr/local/bin/codex", "exec")
+        assert "-p" not in args
+        assert "--sandbox" in args
+        assert args[args.index("--sandbox") + 1] == "read-only"
+        assert "--skip-git-repo-check" in args
+        assert "--ephemeral" in args
+        assert "--ignore-rules" in args
+        assert args[args.index("--model") + 1] == "gpt-5.6-sol"
+        assert mock_exec.call_args.kwargs["cwd"] == "/workspace"
+
+    @pytest.mark.asyncio
+    async def test_codex_without_model_omits_model_flag(self):
+        proc = _make_proc(b"Codex title\n")
+        with patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
+            await suggest_title("some request", backend="codex")
+        args = mock_exec.call_args.args
+        assert "--model" not in args
+
+    @pytest.mark.asyncio
+    async def test_claude_backend_unaffected_by_model_kwarg(self):
+        """backend="claude" (the default) must keep the exact pre-existing argv —
+        model is a Codex-only lever, not a general override for Claude's
+        hardcoded `haiku` title model. cwd is still forwarded to the subprocess
+        call either way, same as any other backend."""
+        proc = _make_proc(b"Some Title\n")
+        with patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
+            await suggest_title("some request", model="sonnet", cwd="/workspace")
+        args = mock_exec.call_args.args
+        assert args == ("claude", "-p", "--model", "haiku", args[-1])
+        assert mock_exec.call_args.kwargs["cwd"] == "/workspace"
+
+    @pytest.mark.asyncio
     async def test_prompt_contains_user_message(self):
         proc = _make_proc(b"Some Title\n")
         with patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
@@ -325,34 +370,33 @@ class TestSuggestTitleErrors:
         proc.kill.assert_called_once()
 
 
-class TestSuggestTitleZaiEnv:
-    """When the env points at Z.ai, the title call uses a Z.ai-served model.
+class TestSuggestTitleZaiBackend:
+    """When backend="zai", the title call uses the configured GLM model.
 
     The default ``haiku`` is an Anthropic alias the Z.ai endpoint does not
-    serve, so a title call would 404. suggest_title detects Z.ai from the env
-    and switches to a GLM model for the one-shot title generation.
+    serve, so a title call would 404.
     """
 
     @pytest.mark.asyncio
-    async def test_zai_env_uses_glm_model(self):
+    async def test_zai_backend_uses_configured_model(self):
         proc = _make_proc(b"Z.ai title\n")
-        zai_env = {
-            "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
-            "PATH": "/usr/bin",
-        }
         with patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
-            await suggest_title("some request", env=zai_env)
+            await suggest_title("some request", backend="zai", model="glm-5.2[1m]")
         args = mock_exec.call_args[0]
+        assert "-p" in args
         assert "--model" in args
         model_idx = args.index("--model")
-        assert args[model_idx + 1] == "glm-4.7"
+        assert args[model_idx + 1] == "glm-5.2[1m]"
 
     @pytest.mark.asyncio
-    async def test_non_zai_env_still_uses_haiku(self):
-        proc = _make_proc(b"Anthropic title\n")
-        anthropic_env = {"ANTHROPIC_BASE_URL": "https://api.anthropic.com", "PATH": "/usr/bin"}
+    async def test_zai_backend_without_model_falls_back_to_haiku(self):
+        """No configured model to fall back to means the call would 404 either
+        way; keep the previous (already-broken-for-zai) argv rather than send
+        an empty --model value."""
+        proc = _make_proc(b"Some title\n")
         with patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
-            await suggest_title("some request", env=anthropic_env)
+            await suggest_title("some request", backend="zai")
         args = mock_exec.call_args[0]
         model_idx = args.index("--model")
         assert args[model_idx + 1] == "haiku"
+
