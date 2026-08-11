@@ -127,16 +127,30 @@ environment minus `STRIPPED_ENV_KEYS`:
 | `CCDB_INGEST_TOKEN` | `/api/ingest` credential |
 | `CCDB_TEAMS_APP_PASSWORD`, `CCDB_TEAMS_QUEUE_URL` | Teams credentials |
 | `CCDB_API_URL`, `CCDB_API_SECRET` | Inherited control-plane values (see below) |
+| `CCDB_ZAI_ENV_FILE` | Path to the Z.ai credential file; `ZaiRunner` consumes it and never forwards it |
 
 Claude Code also applies the same filter to the `CCDB_CLI_ENV_FILE` overlay, so a stripped
 variable cannot come back through the overlay. After filtering, the runner sets the control-plane
 values explicitly for this session: `CCDB_API_URL` (loopback), `CCDB_API_SECRET`, and
 `DISCORD_THREAD_ID`. This is how an agent reaches the relay's REST API on purpose.
 
+### Z.ai credential isolation (zai_runner.py)
+
+A Z.ai thread runs the same Claude Code CLI as the `claude` backend, so `ZaiRunner` cannot rely on
+a different binary to keep the two credential sets apart. Instead, before applying the Z.ai
+credential file it pops `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the subprocess
+environment — the two variables the direct-Anthropic backend passes through (see below) — so a
+Z.ai session can never inherit, or silently fall back to, direct Anthropic credentials. Losing the
+Z.ai credential file therefore fails as an auth error against Z.ai, not as a quiet switch to
+Anthropic billing.
+
 ### What is not stripped
 
 Provider credentials (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, ...) and general variables (`PATH`,
 `HOME`, ...) are passed through, because the selected CLI needs them to work.
+
+The Z.ai backend is the one exception: it strips `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` for
+its own threads only (see above).
 
 ### This is an environment boundary, not an OS boundary
 
