@@ -129,7 +129,12 @@ def _completion_fields(event: StreamEvent, runner: object) -> tuple[tuple[str, s
     if event.cost_usd is not None:
         fields.append(("Cost", f"${event.cost_usd:.4f}"))
     if event.input_tokens is not None and event.output_tokens is not None:
-        fields.append(("Tokens", f"{event.input_tokens} in · {event.output_tokens} out"))
+        token_str = f"{event.input_tokens} in · {event.output_tokens} out"
+        if event.cache_read_tokens:
+            total = event.input_tokens + event.cache_read_tokens
+            hit_pct = int(event.cache_read_tokens / total * 100) if total else 0
+            token_str += f" ({hit_pct}% cache)"
+        fields.append(("Tokens", token_str))
     return tuple(fields)
 
 
