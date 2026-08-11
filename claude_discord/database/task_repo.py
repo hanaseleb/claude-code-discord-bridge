@@ -14,6 +14,13 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
+# Sentinel distinguishing "backend not mentioned in this update() call" (leave
+# the column untouched) from "backend=None" (explicitly clear the pin, so the
+# task resumes following whatever backend is active for its thread/global
+# setting). Plain None can't do double duty here the way it does for the
+# other optional fields, because None is itself a valid value to persist.
+_NOT_PROVIDED = object()
+
 TASK_SCHEMA = """
 CREATE TABLE IF NOT EXISTS scheduled_tasks (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,6 +51,12 @@ ALTER TABLE scheduled_tasks ADD COLUMN thread_id INTEGER;
 ALTER TABLE scheduled_tasks ADD COLUMN one_shot INTEGER DEFAULT 0;
 """
 
+# Migration: add backend column (nullable — None means "follow the
+# thread/global backend setting", unchanged legacy behavior)
+_MIGRATION_BACKEND = """
+ALTER TABLE scheduled_tasks ADD COLUMN backend TEXT;
+"""
+
 
 class TaskRepository:
     """Async CRUD for scheduled_tasks table."""
@@ -70,6 +83,12 @@ class TaskRepository:
                     if stmt:
                         await db.execute(stmt)
                 logger.info("Migrated scheduled_tasks: added thread_id, one_shot")
+            if "backend" not in columns:
+                for stmt in _MIGRATION_BACKEND.strip().split(";"):
+                    stmt = stmt.strip()
+                    if stmt:
+                        await db.execute(stmt)
+                logger.info("Migrated scheduled_tasks: added backend")
             await db.commit()
         logger.info("Task DB initialized at %s", self.db_path)
 
@@ -167,6 +186,7 @@ class TaskRepository:
         anchor_minute: int | None = None,
         thread_id: int | None = None,
         one_shot: bool = False,
+        backend: str | None = None,
     ) -> int:
         """Create a new scheduled task. Returns the created ID.
 
@@ -183,6 +203,10 @@ class TaskRepository:
                 the scheduler posts to this existing thread instead of
                 creating a new one (follow-up mode).
             one_shot: If True, the task auto-disables after a single execution.
+            backend: Optional backend name (e.g. "claude", "codex", "local",
+                "agui", "zai") to pin this task to. When None (default), the
+                task follows whichever backend is active for its thread/global
+                setting at run time — unchanged legacy behavior.
         """
         now = time.time()
         if anchor_hour is not None and not run_immediately:
@@ -196,8 +220,8 @@ class TaskRepository:
                 """INSERT INTO scheduled_tasks
                    (name, prompt, interval_seconds, channel_id, working_dir,
                     enabled, next_run_at, created_at, anchor_hour, anchor_minute,
-                    thread_id, one_shot)
-                   VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)""",
+                    thread_id, one_shot, backend)
+                   VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     name,
                     prompt,
@@ -210,6 +234,7 @@ class TaskRepository:
                     anchor_minute,
                     thread_id,
                     1 if one_shot else 0,
+                    backend,
                 ),
             )
             await db.commit()
@@ -283,11 +308,15 @@ class TaskRepository:
         anchor_hour: int | None = None,
         anchor_minute: int | None = None,
         thread_id: int | None = None,
+        backend: str | None | object = _NOT_PROVIDED,
     ) -> bool:
         """Partially update a task. Returns True if updated.
 
         Set ``anchor_hour=-1`` to clear the anchor (reset to relative mode).
         Set ``thread_id=-1`` to clear the thread (reset to new-thread mode).
+        Omit ``backend`` to leave it untouched; pass ``backend=None`` to clear
+        the pin (resume following the thread/global setting), or a backend
+        name to set/replace it.
         """
         fields: list[str] = []
         values: list[object] = []
@@ -319,6 +348,9 @@ class TaskRepository:
             else:
                 fields.append("thread_id = ?")
                 values.append(thread_id)
+        if backend is not _NOT_PROVIDED:
+            fields.append("backend = ?")
+            values.append(backend)
         if not fields:
             return False
         values.append(task_id)

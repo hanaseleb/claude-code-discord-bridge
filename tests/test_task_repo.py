@@ -368,3 +368,54 @@ class TestTaskRepoOneShot:
         task = await repo.get(task_id)
         assert task is not None
         assert task["one_shot"] is True
+
+
+class TestTaskRepoBackend:
+    """Tests for the backend column — pinning a scheduled task to one backend."""
+
+    async def test_create_without_backend_defaults_to_none(self, repo: TaskRepository) -> None:
+        task_id = await repo.create(
+            name="no-backend", prompt="p", interval_seconds=60, channel_id=1
+        )
+        task = await repo.get(task_id)
+        assert task is not None
+        assert task["backend"] is None
+
+    async def test_create_with_backend(self, repo: TaskRepository) -> None:
+        task_id = await repo.create(
+            name="pinned",
+            prompt="p",
+            interval_seconds=60,
+            channel_id=1,
+            backend="codex",
+        )
+        task = await repo.get(task_id)
+        assert task is not None
+        assert task["backend"] == "codex"
+
+    async def test_update_sets_backend(self, repo: TaskRepository) -> None:
+        task_id = await repo.create(name="u-backend", prompt="p", interval_seconds=60, channel_id=1)
+        result = await repo.update(task_id, backend="zai")
+        assert result is True
+        task = await repo.get(task_id)
+        assert task is not None
+        assert task["backend"] == "zai"
+
+    async def test_update_without_backend_leaves_it_unchanged(self, repo: TaskRepository) -> None:
+        task_id = await repo.create(
+            name="untouched", prompt="p", interval_seconds=60, channel_id=1, backend="codex"
+        )
+        await repo.update(task_id, prompt="new prompt")
+        task = await repo.get(task_id)
+        assert task is not None
+        assert task["backend"] == "codex"
+
+    async def test_update_clear_backend(self, repo: TaskRepository) -> None:
+        task_id = await repo.create(
+            name="clear-backend", prompt="p", interval_seconds=60, channel_id=1, backend="codex"
+        )
+        result = await repo.update(task_id, backend=None)
+        assert result is True
+        task = await repo.get(task_id)
+        assert task is not None
+        assert task["backend"] is None
