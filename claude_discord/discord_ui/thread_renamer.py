@@ -168,12 +168,19 @@ async def _ask_for_a_line(
     Prompt is passed as a direct argument to the binary (no shell, no injection
     risk). Returns None on timeout, non-zero exit, empty output or any error.
     """
+    # The default ``haiku`` is an Anthropic alias the Z.ai endpoint does not
+    # serve, so a title call against a Z.ai-configured env would 404. Detect
+    # the endpoint the same way api_provider does and pick a model it serves.
+    title_model = "haiku"
+    if env and "api.z.ai" in (env.get("ANTHROPIC_BASE_URL") or ""):
+        title_model = "glm-4.7"
+
     try:
         proc = await asyncio.create_subprocess_exec(
             claude_command,
             "-p",
             "--model",
-            "haiku",
+            title_model,
             # The prompt is a fixed template with the text interpolated into its
             # middle, but the separator is not optional for that reason: it is
             # what makes "could this argument ever start with a dash?" a
