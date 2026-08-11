@@ -399,4 +399,3 @@ class TestSuggestTitleZaiBackend:
         args = mock_exec.call_args[0]
         model_idx = args.index("--model")
         assert args[model_idx + 1] == "haiku"
-
