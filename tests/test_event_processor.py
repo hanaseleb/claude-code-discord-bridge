@@ -27,7 +27,11 @@ from claude_discord.claude.types import (
     ToolCategory,
     ToolUseEvent,
 )
-from claude_discord.cogs.event_processor import EventProcessor, _backend_name_from_runner
+from claude_discord.cogs.event_processor import (
+    EventProcessor,
+    _backend_name_from_runner,
+    _completion_fields,
+)
 from claude_discord.cogs.run_config import RunConfig
 from claude_discord.discord_ui.prompt_views import ChoiceView
 from claude_discord.surface import DiscordActivity, FormLauncher
@@ -107,6 +111,46 @@ def test_backend_name_prefers_declared_zai_backend_name() -> None:
 
     assert _backend_name_from_runner(ZaiLikeRunner()) == "zai"
     assert _backend_name_from_runner(ZaiRunner(model="glm-5.2[1m]")) == "zai"
+
+
+class TestCompletionFieldsTokens:
+    """The frontend-neutral "Tokens" field must show cache hit rate, matching
+    session_complete_embed's ``(N% cache)`` suffix — the two builders should
+    not silently drift into showing different information for the same run.
+    """
+
+    def _tokens_value(self, event: StreamEvent, runner: object) -> str | None:
+        fields = _completion_fields(event, runner)
+        for label, value in fields:
+            if label == "Tokens":
+                return value
+        return None
+
+    def test_no_cache_read_tokens_omits_suffix(self, runner: MagicMock) -> None:
+        event = _make_result_event(input_tokens=100, output_tokens=20)
+        value = self._tokens_value(event, runner)
+        assert value == "100 in · 20 out"
+
+    def test_cache_read_tokens_present_adds_hit_percentage(self, runner: MagicMock) -> None:
+        # 2 new input tokens + 54432 cache-read tokens — the exact shape
+        # reported by a real Claude CLI turn with a large, already-cached
+        # system prompt (see the message_delta usage fix). int() truncates
+        # 54432 / 54434 * 100 = 99.99...% down to 99%, matching
+        # session_complete_embed's identical truncation.
+        event = _make_result_event(input_tokens=2, output_tokens=570, cache_read_tokens=54432)
+        value = self._tokens_value(event, runner)
+        assert value == "2 in · 570 out (99% cache)"
+
+    def test_partial_cache_hit_rounds_down(self, runner: MagicMock) -> None:
+        event = _make_result_event(input_tokens=100, output_tokens=20, cache_read_tokens=300)
+        value = self._tokens_value(event, runner)
+        # 300 / (100 + 300) = 75%
+        assert value == "100 in · 20 out (75% cache)"
+
+    def test_zero_cache_read_tokens_omits_suffix(self, runner: MagicMock) -> None:
+        event = _make_result_event(input_tokens=100, output_tokens=20, cache_read_tokens=0)
+        value = self._tokens_value(event, runner)
+        assert value == "100 in · 20 out"
 
 
 class TestEventProcessorProperties:
