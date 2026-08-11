@@ -386,18 +386,22 @@ async def setup_bridge(
     if backend_factory is not None:
         from .backend_settings import BackendSettings
 
-        _runner_class = runner.__class__.__name__
+        _runner_backend = getattr(
+            runner,
+            "backend_name",
+            runner.__class__.__name__.replace("Runner", "").lower(),
+        )
         backend_settings = BackendSettings(
             settings_repo,
-            env_backend=_runner_class.replace("Runner", "").lower(),
-            env_model_for_claude=(runner.model if _runner_class == "ClaudeRunner" else ""),
-            env_model_for_codex=(runner.model if _runner_class == "CodexRunner" else ""),
+            env_backend=_runner_backend,
+            env_model_for_claude=(runner.model if _runner_backend == "claude" else ""),
+            env_model_for_codex=(runner.model if _runner_backend == "codex" else ""),
             # Dedicated var first, so a Claude-default deployment can still
             # name a pi model for the threads that switch to it.
             env_model_for_pi=(
-                os.getenv("CCDB_PI_MODEL", "")
-                or (runner.model if _runner_class == "PiRunner" else "")
+                os.getenv("CCDB_PI_MODEL", "") or (runner.model if _runner_backend == "pi" else "")
             ),
+            env_model_for_zai=(runner.model if _runner_backend == "zai" else ""),
         )
 
     chat_cog = ClaudeChatCog(

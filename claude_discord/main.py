@@ -48,8 +48,12 @@ def load_config() -> dict[str, str]:
     frontends = parse_frontends(os.getenv("CCDB_FRONTENDS", ""))
     # Default model is backend-specific: Claude needs an explicit alias
     # ("sonnet"), but Codex defers to its own config.toml default when left
-    # empty (so we never pin a stale Codex model version).
-    default_model = "sonnet" if backend == "claude" else ""
+    # empty (so we never pin a stale Codex model version). Z.ai uses its own
+    # model setting and must never inherit CLAUDE_MODEL.
+    if backend == "zai":
+        default_model = os.getenv("CCDB_MODEL") or os.getenv("CCDB_ZAI_MODEL", "glm-5.2[1m]")
+    else:
+        default_model = "sonnet" if backend == "claude" else ""
 
     return {
         "token": token,
@@ -64,6 +68,8 @@ def load_config() -> dict[str, str]:
         "pi_command": os.getenv("CCDB_PI_COMMAND", ""),
         "agui_url": os.getenv("CCDB_AGUI_URL", ""),
         "agui_token": os.getenv("CCDB_AGUI_TOKEN", ""),
+        "zai_env_file": os.getenv("CCDB_ZAI_ENV_FILE", ""),
+        "zai_model": os.getenv("CCDB_ZAI_MODEL", "glm-5.2[1m]"),
         "model": _env("CCDB_MODEL", "CLAUDE_MODEL", default_model),
         "permission_mode": _env("CCDB_PERMISSION_MODE", "CLAUDE_PERMISSION_MODE", "acceptEdits"),
         "working_dir": _env("CCDB_WORKING_DIR", "CLAUDE_WORKING_DIR", ""),
@@ -109,15 +115,15 @@ async def main() -> None:
     if config["allowed_tools"]:
         allowed_tools = [t.strip() for t in config["allowed_tools"].split(",") if t.strip()] or None
 
-    # Create runner via backend factory (CCDB_BACKEND=claude|codex)
+    # Create runner via backend factory (CCDB_BACKEND=claude|codex|zai)
     backend_name = config["backend"]
-    # BackendFactory is the runtime authority for building Claude/Codex
+    # BackendFactory is the runtime authority for building Claude/Codex/Z.ai
     # runners on demand (e.g. when the user switches via /backend).
     from .backend_factory import BackendFactory
 
     factory = BackendFactory(
         claude_command=config["claude_command"]
-        or (config["command"] if backend_name == "claude" else "")
+        or (config["command"] if backend_name in {"claude", "zai"} else "")
         or "claude",
         codex_command=config["codex_command"]
         or (config["command"] if backend_name == "codex" else "")
@@ -136,6 +142,8 @@ async def main() -> None:
         agui_url=config["agui_url"] or None,
         agui_token=config["agui_token"] or None,
         api_secret=config["api_secret"] or None,
+        zai_env_file=config["zai_env_file"] or None,
+        zai_model=config["zai_model"] or None,
     )
 
     runner = factory.build(backend=backend_name, model=config["model"] or None)

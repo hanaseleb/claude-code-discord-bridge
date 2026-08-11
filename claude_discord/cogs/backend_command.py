@@ -37,6 +37,7 @@ VALID_EFFORTS: dict[str, frozenset[str]] = {
     "local": VALID_CODEX_EFFORTS,
     # pi calls this "thinking" and includes an explicit "off".
     "pi": VALID_PI_THINKING,
+    "zai": frozenset({"low", "medium", "high", "max"}),  # Claude Code CLI
 }
 
 EFFORT_ORDER: dict[str, list[str]] = {
@@ -44,6 +45,7 @@ EFFORT_ORDER: dict[str, list[str]] = {
     "codex": ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
     "local": ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
     "pi": ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+    "zai": ["low", "medium", "high", "max"],
 }
 
 # Suggestions only: the model fields remain free text.
@@ -73,6 +75,14 @@ SUGGESTED_MODELS: dict[str, list[tuple[str, str]]] = {
     "pi": [
         ("anthropic/claude-opus-5", "Claude Opus 5"),
         ("openai-codex/gpt-6-astra", "GPT-6-Astra"),
+    ],
+    # Z.ai serves the Anthropic-compatible GLM family. The model id is free-text,
+    # so any id the Z.ai endpoint accepts works even if it is not listed here.
+    "zai": [
+        ("glm-5.2[1m]", "GLM-5.2 with 1M context"),
+        ("glm-5.2", "GLM-5.2"),
+        ("glm-5-turbo", "GLM-5 Turbo"),
+        ("glm-4.7", "GLM-4.7"),
     ],
 }
 
@@ -165,7 +175,7 @@ class BackendCommandCog(commands.Cog):
         ],
     )
     @app_commands.describe(
-        name="claude, codex, local, or agui. Omit to show current setting.",
+        name="claude, codex, local, agui, or zai. Omit to show current setting.",
         scope=(
             "thread: only this thread; global: server-wide default. "
             "Default: thread when invoked in a thread, otherwise global."
@@ -228,7 +238,9 @@ class BackendCommandCog(commands.Cog):
             if resolved_scope == SCOPE_THREAD and target_thread_id is not None
             else "**globally**"
         )
-        emoji = {"codex": "🌀", "local": "🏠", "agui": "🔌", "pi": "🥧"}.get(name, "🤖")
+        emoji = {"codex": "🌀", "local": "🏠", "agui": "🔌", "pi": "🥧", "zai": "🟣"}.get(
+            name, "🤖"
+        )
         await interaction.response.send_message(
             f"{emoji} Backend set to `{name}` {scope_label}. Next session will use it.",
             ephemeral=False,

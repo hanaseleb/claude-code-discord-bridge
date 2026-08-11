@@ -21,6 +21,7 @@ STRIPPED_ENV_KEYS = frozenset(
         "CCDB_TEAMS_QUEUE_URL",
         "CCDB_API_URL",
         "CCDB_API_SECRET",
+        "CCDB_ZAI_ENV_FILE",
     }
 )
 
