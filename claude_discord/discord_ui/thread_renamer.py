@@ -1,4 +1,4 @@
-"""Thread title auto-renamer — uses `claude -p` to generate a concise title.
+"""Thread title auto-renamer for the configured AI backend.
 
 After a new thread is created from a user's first message, this module runs
 a lightweight one-shot call to generate a descriptive, short thread title.
@@ -106,24 +106,43 @@ async def suggest_title(
     user_message: str,
     claude_command: str = "claude",
     env: dict[str, str] | None = None,
+    *,
+    backend: str = "claude",
+    model: str | None = None,
+    cwd: str | None = None,
 ) -> str | None:
-    """Call `claude -p` and return a short thread title.
+    """Call the active backend CLI and return a short thread title.
 
     Returns None on empty input, timeout, or any error, so the caller can
     keep the original thread name without any visible failure.
     Prompt is passed as a direct argument to the binary (no shell, no injection risk).
 
     Args:
+        claude_command: CLI command path. The legacy parameter name is kept for
+            API compatibility; it may point to ``claude`` or ``codex``.
         env: Optional environment dict for the subprocess. When provided
              (e.g. from ``ClaudeRunner._build_env()``), ensures the CLI
              picks up the same API keys and overlay config as main sessions.
              When ``None``, the subprocess inherits the parent environment.
+        backend: ``claude`` or ``codex``.
+        model: Active backend model, forwarded to Codex's ``--model`` when set.
+        cwd: Working directory to pass to the backend subprocess. Codex refuses
+             to run outside a git repository unless told otherwise (see
+             ``--skip-git-repo-check`` below), and honours ``cwd`` the same way
+             the main session runner does.
     """
     if not user_message.strip():
         return None
 
     prompt = _PROMPT_TEMPLATE.format(text=user_message[:2000])
-    return await _ask_for_a_line(prompt, claude_command=claude_command, env=env)
+    return await _ask_for_a_line(
+        prompt,
+        claude_command=claude_command,
+        env=env,
+        backend=backend,
+        model=model,
+        cwd=cwd,
+    )
 
 
 async def suggest_retitle(
@@ -162,8 +181,11 @@ async def _ask_for_a_line(
     prompt: str,
     claude_command: str,
     env: dict[str, str] | None,
+    backend: str = "claude",
+    model: str | None = None,
+    cwd: str | None = None,
 ) -> str | None:
-    """Run one short `claude -p` call and return its first meaningful line.
+    """Run one short one-shot CLI call and return its first meaningful line.
 
     Prompt is passed as a direct argument to the binary (no shell, no injection
     risk). Returns None on timeout, non-zero exit, empty output or any error.
@@ -175,8 +197,29 @@ async def _ask_for_a_line(
     if env and "api.z.ai" in (env.get("ANTHROPIC_BASE_URL") or ""):
         title_model = "glm-4.7"
 
-    try:
-        proc = await asyncio.create_subprocess_exec(
+    if backend == "codex":
+        # `codex exec` has no `-p`/one-shot-print flag like the Claude CLI —
+        # `exec` already is the one-shot, non-interactive mode. `--sandbox
+        # read-only` is enough for a title suggestion (no edits, no shell
+        # commands expected) and, unlike the main session runner, does not
+        # need to defer to any OS-level sandbox override: a read-only title
+        # call has nothing to escalate.
+        args = [
+            claude_command,
+            "exec",
+            "--sandbox",
+            "read-only",
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--ignore-rules",
+            "-c",
+            "model_reasoning_effort=low",
+        ]
+        if model:
+            args.extend(["--model", model])
+        args.append(prompt)
+    else:
+        args = [
             claude_command,
             "-p",
             "--model",
@@ -187,9 +230,16 @@ async def _ask_for_a_line(
             # question nobody has to re-answer when the template changes.
             "--",
             prompt,
+        ]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            cwd=cwd,
         )
         try:
             stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=_TIMEOUT_SECONDS)
