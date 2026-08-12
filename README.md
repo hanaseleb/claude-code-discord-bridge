@@ -1063,6 +1063,20 @@ curl -X POST http://localhost:8080/api/tasks \
   -d '{"prompt": "Weekly security scan", "interval_seconds": 604800}'
 ```
 
+Pin the task to a specific backend by adding `"backend"` (`claude`/`codex`/`local`/`agui`/`zai`).
+A pinned task always runs on that backend, regardless of whatever the thread/global `/backend`
+setting is when it fires. Omit it and the task keeps following that setting live — the same
+behavior as before this field existed:
+
+```bash
+curl -X POST "$CCDB_API_URL/api/tasks" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Weekly security scan", "interval_seconds": 604800, "backend": "codex"}'
+```
+
+Change or clear the pin later with `PATCH /api/tasks/{id}` (`"backend": "zai"` to set, `"backend": null`
+to clear).
+
 The 30-second master loop picks up due tasks and spawns Claude Code sessions automatically.
 
 ---
@@ -1129,10 +1143,10 @@ uv sync --extra api
 | POST | `/api/schedule` | Schedule a notification |
 | GET | `/api/scheduled` | List pending notifications |
 | DELETE | `/api/scheduled/{id}` | Cancel a notification |
-| POST | `/api/tasks` | Register a scheduled Claude Code task |
+| POST | `/api/tasks` | Register a scheduled Claude Code task; optionally pin it to a `backend` |
 | GET | `/api/tasks` | List registered tasks |
 | DELETE | `/api/tasks/{id}` | Remove a task |
-| PATCH | `/api/tasks/{id}` | Update a task (enable/disable, change schedule) |
+| PATCH | `/api/tasks/{id}` | Update a task (enable/disable, change schedule, set/clear `backend`) |
 | POST | `/api/spawn` | Create a new Discord thread and start a Claude Code session (non-blocking); pass `auto_start: false` to defer Claude until the first user reply |
 | POST | `/api/ingest` | Authenticated external spawn (browser extension / webhook) with base64 attachments; returns a `result_id` when result retrieval is configured |
 | GET | `/api/ingest/{result_id}` | Poll the spawned session's final reply (`status`/`result`/`error`/`thread_id`) |

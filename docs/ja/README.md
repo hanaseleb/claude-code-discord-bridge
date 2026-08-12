@@ -1002,6 +1002,16 @@ curl -X POST http://localhost:8080/api/tasks \
   -d '{"prompt": "週次セキュリティスキャン", "interval_seconds": 604800}'
 ```
 
+`"backend"`（`claude`/`codex`/`local`/`agui`/`zai`）を指定すると、そのタスクを常に指定バックエンドで実行できる。実行時点でのスレッド/グローバルの `/backend` 設定には従わない。省略した場合はこれまでと同じ挙動——実行時点の設定に従う。
+
+```bash
+curl -X POST "$CCDB_API_URL/api/tasks" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "週次セキュリティスキャン", "interval_seconds": 604800, "backend": "codex"}'
+```
+
+`PATCH /api/tasks/{id}` で後から変更・解除も可能（`"backend": "zai"` で設定、`"backend": null` で解除）。
+
 30 秒マスターループが期限のタスクを検出し、Claude Code セッションを自動起動します。
 
 ---
@@ -1068,10 +1078,10 @@ uv add "claude-code-discord-bridge[api]"
 | POST | `/api/schedule` | 通知のスケジュール |
 | GET | `/api/scheduled` | 保留中の通知一覧 |
 | DELETE | `/api/scheduled/{id}` | スケジュール済み通知のキャンセル |
-| POST | `/api/tasks` | 定期的な Claude Code タスクを登録 |
+| POST | `/api/tasks` | 定期的な Claude Code タスクを登録（任意で `backend` を指定して固定可能） |
 | GET | `/api/tasks` | 登録済みタスクの一覧 |
 | DELETE | `/api/tasks/{id}` | タスクの削除 |
-| PATCH | `/api/tasks/{id}` | タスクの更新（有効/無効、スケジュール変更） |
+| PATCH | `/api/tasks/{id}` | タスクの更新（有効/無効、スケジュール変更、`backend` の設定・解除） |
 | POST | `/api/spawn` | 新しい Discord スレッドを作成し Claude Code セッションを起動（非ブロッキング）。`auto_start: false` を指定するとユーザーの最初の返信まで Claude の起動を延期できる |
 | POST | `/api/ingest` | 認証済み外部スポーン（ブラウザ拡張機能 / webhook）。base64 添付ファイル対応。結果取得が設定されている場合 `result_id` を返す |
 | GET | `/api/ingest/{result_id}` | スポーンされたセッションの最終返信をポーリング（`status`/`result`/`error`/`thread_id`） |

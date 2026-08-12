@@ -45,6 +45,24 @@ run together.
 Use `/model` and `/effort` to inspect or change backend-specific choices. Each backend remembers
 its own model and reasoning setting.
 
+## Pin a scheduled task to a backend
+
+`/backend` changes the live setting for a conversation or the whole deployment — a scheduled
+task that follows it can run on a different backend every time it fires, if someone flips the
+switch in between. To fix a task to one backend regardless of that live setting, pass `backend`
+when registering it:
+
+```bash
+curl -X POST "$CCDB_API_URL/api/tasks" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Weekly dependency audit", "interval_seconds": 604800, "backend": "codex"}'
+```
+
+The task's model and reasoning effort still come from whatever `/model` / `/effort` currently has
+configured for that backend — pinning only fixes *which* backend runs, not the model on top of it.
+Omit `backend` and the task keeps its original behavior: it follows the thread/global `/backend`
+setting live, the same as before this field existed.
+
 ## Claude Code and Codex
 
 Install and authenticate the official CLI on the private session host before starting ccdb. The

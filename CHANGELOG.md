@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Per-task backend pin for scheduled tasks** — `POST /api/tasks` and `PATCH /api/tasks/{id}`
+  accept an optional `"backend"` field (`claude`/`codex`/`local`/`agui`/`zai`, or `null` to clear).
+  A pinned task always runs on that backend regardless of the thread/global `/backend` setting at
+  fire time; omitting it keeps the existing behavior of following whatever backend is currently
+  active.
+
 ## [4.0.0] - 2026-08-11
 
 ### Added
