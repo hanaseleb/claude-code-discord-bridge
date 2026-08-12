@@ -419,3 +419,24 @@ class TestTaskRepoBackend:
         task = await repo.get(task_id)
         assert task is not None
         assert task["backend"] is None
+
+    async def test_get_due_returns_backend_key(self, repo: TaskRepository) -> None:
+        """get_due() is the master-loop path (scheduler.py fires tasks from it).
+        It must return the backend column so a pinned task's override survives —
+        a future refactor to an explicit column list must not silently drop it."""
+        task_id = await repo.create(
+            name="pinned-due",
+            prompt="p",
+            interval_seconds=60,
+            channel_id=1,
+            backend="codex",
+        )
+        # Make the task due (same mechanism as test_get_due_returns_overdue_tasks)
+        await repo._db_execute(
+            "UPDATE scheduled_tasks SET next_run_at = ? WHERE id = ?",
+            (time.time() - 100, task_id),
+        )
+        due = await repo.get_due()
+        assert len(due) == 1
+        assert due[0]["name"] == "pinned-due"
+        assert due[0]["backend"] == "codex"
