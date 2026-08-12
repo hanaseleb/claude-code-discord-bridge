@@ -20,11 +20,24 @@ AUTOCOMPACT_THRESHOLD = 83.5
 
 # Per-backend visual mapping for session embeds. Falls back to claude
 # defaults when an unknown / None backend is supplied.
+#
+# BACKEND_EMOJI is the single source of truth for a backend's icon — the
+# /backend dropdown and the "Backend set to …" confirmation both prefix their
+# text with it, so every selectable backend needs an entry. Each is a concrete
+# symbol (not a plain coloured shape) so the backends read distinctly at a
+# glance: Claude 🤖, Codex 🌀, Z.ai 🐉, …
+BACKEND_EMOJI: dict[str, str] = {
+    "claude": "\U0001f916",  # robot face 🤖
+    "codex": "\U0001f300",  # cyclone 🌀
+    "local": "\U0001f3e0",  # house 🏠
+    "agui": "\U0001f50c",  # electric plug 🔌
+    "zai": "\U0001f409",  # dragon 🐉 — Zhipu / Z.ai
+}
 _BACKEND_TITLE: dict[str, str] = {
-    "claude": "\U0001f916 Claude Code",  # robot face 🤖
-    "codex": "\U0001f300 OpenAI Codex",  # cyclone 🌀
-    "local": "\U0001f3e0 Local model",  # house 🏠
-    "zai": "\U0001f7e3 Z.ai GLM",  # purple circle 🟣
+    "claude": f"{BACKEND_EMOJI['claude']} Claude Code",
+    "codex": f"{BACKEND_EMOJI['codex']} OpenAI Codex",
+    "local": f"{BACKEND_EMOJI['local']} Local model",
+    "zai": f"{BACKEND_EMOJI['zai']} Z.ai GLM",
 }
 _BACKEND_COLOR_START: dict[str, int] = {
     "claude": COLOR_INFO,  # Discord blurple

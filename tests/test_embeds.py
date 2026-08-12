@@ -426,3 +426,25 @@ class TestSessionStartEmbedBackend:
         claude = session_start_embed(backend="claude", model="sonnet")
         assert zai.colour.value != claude.colour.value
         assert zai.title != claude.title
+
+    def test_zai_title_uses_dragon_emoji(self) -> None:
+        """Z.ai's icon is a dragon — a concrete symbol, not a generic purple circle."""
+        from claude_discord.discord_ui.embeds import BACKEND_EMOJI, session_start_embed
+
+        assert BACKEND_EMOJI["zai"] == "\U0001f409"  # 🐉 dragon
+        embed = session_start_embed(backend="zai", model="glm-5.2[1m]")
+        assert embed.title is not None
+        assert embed.title.startswith("\U0001f409")
+        assert "\U0001f7e3" not in embed.title  # old purple circle is gone
+
+    def test_backend_emoji_covers_every_backend_and_is_distinct(self) -> None:
+        """The /backend dropdown prefixes each entry with BACKEND_EMOJI, so
+        every selectable backend needs a concrete icon, and Z.ai must not
+        reuse Claude's robot."""
+        from claude_discord.backend_settings import ALL_BACKENDS
+        from claude_discord.discord_ui.embeds import BACKEND_EMOJI
+
+        for b in ALL_BACKENDS:
+            assert b in BACKEND_EMOJI, f"missing emoji for backend {b!r}"
+        assert len(set(BACKEND_EMOJI.values())) == len(BACKEND_EMOJI), "duplicate emoji"
+        assert BACKEND_EMOJI["zai"] != BACKEND_EMOJI["claude"]

@@ -28,6 +28,7 @@ from ..backend_settings import (
     CODEX_STATUS_MODES,
     BackendSettings,
 )
+from ..discord_ui.embeds import BACKEND_EMOJI
 from ..model_catalog import claude_model_choices
 
 if TYPE_CHECKING:
@@ -153,7 +154,7 @@ class BackendCommandCog(commands.Cog):
         description="Show or switch the AI backend",
     )
     @app_commands.choices(
-        name=[Choice(name=b, value=b) for b in ALL_BACKENDS],
+        name=[Choice(name=f"{BACKEND_EMOJI.get(b, '')} {b}", value=b) for b in ALL_BACKENDS],
         scope=[
             Choice(name="thread", value=SCOPE_THREAD),
             Choice(name="global", value=SCOPE_GLOBAL),
@@ -232,12 +233,7 @@ class BackendCommandCog(commands.Cog):
             if resolved_scope == SCOPE_THREAD and target_thread_id is not None
             else "**globally**"
         )
-        emoji = {
-            "codex": "\U0001f300",
-            "local": "\U0001f3e0",
-            "agui": "\U0001f50c",
-            "zai": "\U0001f7e3",
-        }.get(name, "\U0001f916")
+        emoji = BACKEND_EMOJI.get(name, "\U0001f916")
         await interaction.response.send_message(
             f"{emoji} Backend set to `{name}` {scope_label}. Next session will use it.",
             ephemeral=False,
