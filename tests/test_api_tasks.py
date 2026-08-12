@@ -285,3 +285,123 @@ class TestTasksFollowUp:
         task = data["tasks"][0]
         assert task["thread_id"] == 7777
         assert task["one_shot"] is True
+
+
+class TestTasksBackend:
+    """Tests for the optional backend field in /api/tasks."""
+
+    async def test_create_task_with_backend(self, client: TestClient) -> None:
+        resp = await client.post(
+            "/api/tasks",
+            json={
+                "name": "pinned-task",
+                "prompt": "p",
+                "interval_seconds": 60,
+                "channel_id": 1,
+                "backend": "codex",
+            },
+        )
+        assert resp.status == 201
+
+    async def test_create_task_with_invalid_backend_returns_400(self, client: TestClient) -> None:
+        resp = await client.post(
+            "/api/tasks",
+            json={
+                "name": "bad-backend",
+                "prompt": "p",
+                "interval_seconds": 60,
+                "channel_id": 1,
+                "backend": "not-a-real-backend",
+            },
+        )
+        assert resp.status == 400
+
+    async def test_created_task_has_backend(
+        self, client: TestClient, task_repo: TaskRepository
+    ) -> None:
+        resp = await client.post(
+            "/api/tasks",
+            json={
+                "name": "with-backend",
+                "prompt": "p",
+                "interval_seconds": 60,
+                "channel_id": 1,
+                "backend": "zai",
+            },
+        )
+        task_id = (await resp.json())["id"]
+        task = await task_repo.get(task_id)
+        assert task is not None
+        assert task["backend"] == "zai"
+
+    async def test_task_without_backend_defaults_to_none(
+        self, client: TestClient, task_repo: TaskRepository
+    ) -> None:
+        resp = await client.post(
+            "/api/tasks",
+            json={"name": "no-backend", "prompt": "p", "interval_seconds": 60, "channel_id": 1},
+        )
+        task_id = (await resp.json())["id"]
+        task = await task_repo.get(task_id)
+        assert task is not None
+        assert task["backend"] is None
+
+    async def test_patch_sets_backend(
+        self, client: TestClient, task_repo: TaskRepository
+    ) -> None:
+        resp = await client.post(
+            "/api/tasks",
+            json={"name": "to-pin", "prompt": "p", "interval_seconds": 60, "channel_id": 1},
+        )
+        task_id = (await resp.json())["id"]
+        patch_resp = await client.patch(f"/api/tasks/{task_id}", json={"backend": "codex"})
+        assert patch_resp.status == 200
+        task = await task_repo.get(task_id)
+        assert task is not None
+        assert task["backend"] == "codex"
+
+    async def test_patch_with_invalid_backend_returns_400(self, client: TestClient) -> None:
+        resp = await client.post(
+            "/api/tasks",
+            json={"name": "to-pin-bad", "prompt": "p", "interval_seconds": 60, "channel_id": 1},
+        )
+        task_id = (await resp.json())["id"]
+        patch_resp = await client.patch(
+            f"/api/tasks/{task_id}", json={"backend": "not-a-real-backend"}
+        )
+        assert patch_resp.status == 400
+
+    async def test_patch_clears_backend(
+        self, client: TestClient, task_repo: TaskRepository
+    ) -> None:
+        resp = await client.post(
+            "/api/tasks",
+            json={
+                "name": "to-unpin",
+                "prompt": "p",
+                "interval_seconds": 60,
+                "channel_id": 1,
+                "backend": "codex",
+            },
+        )
+        task_id = (await resp.json())["id"]
+        patch_resp = await client.patch(f"/api/tasks/{task_id}", json={"backend": None})
+        assert patch_resp.status == 200
+        task = await task_repo.get(task_id)
+        assert task is not None
+        assert task["backend"] is None
+
+    async def test_list_shows_backend(self, client: TestClient) -> None:
+        await client.post(
+            "/api/tasks",
+            json={
+                "name": "listed-with-backend",
+                "prompt": "p",
+                "interval_seconds": 60,
+                "channel_id": 1,
+                "backend": "local",
+            },
+        )
+        resp = await client.get("/api/tasks")
+        data = await resp.json()
+        assert data["tasks"][0]["backend"] == "local"

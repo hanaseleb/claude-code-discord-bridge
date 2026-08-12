@@ -35,6 +35,7 @@ from aiohttp import web
 from claude_code_core.thread_search import run_thread_search
 from claude_code_core.transcript_search import default_transcripts_root
 
+from ..backend_settings import ALL_BACKENDS
 from ..discord_ui.file_sender import send_file_blobs
 from ..relay import MODE_INTERRUPT, MODE_QUEUE, VALID_MODES, RelayGuard, build_relay_prompt
 from ..session_view import STATE_HISTORY, STATE_RUNNING, build_session_views
@@ -629,6 +630,10 @@ class ApiServer:
                 instead of creating a new one.
             one_shot: (optional, default false) If true, auto-disable after
                 a single execution.
+            backend: (optional) Pin this task to one backend — one of
+                ``claude``, ``codex``, ``local``, ``agui``, ``zai``. Omit to
+                have the task follow whatever backend is active for its
+                thread/global setting when it fires (unchanged behavior).
         """
         if err := self._require_task_repo():
             return err
@@ -655,6 +660,16 @@ class ApiServer:
 
         one_shot = bool(data.get("one_shot", False))
 
+        raw_backend = data.get("backend")
+        backend: str | None = None
+        if raw_backend is not None:
+            backend = str(raw_backend)
+            if backend not in ALL_BACKENDS:
+                return web.json_response(
+                    {"error": f"Unknown backend {backend!r}. Choose: {', '.join(ALL_BACKENDS)}."},
+                    status=400,
+                )
+
         try:
             task_id = await self.task_repo.create(  # type: ignore[union-attr]
                 name=str(data["name"]),
@@ -667,6 +682,7 @@ class ApiServer:
                 anchor_minute=anchor_minute,
                 thread_id=thread_id,
                 one_shot=one_shot,
+                backend=backend,
             )
         except Exception as exc:
             # Most likely a UNIQUE constraint violation on name
@@ -706,6 +722,9 @@ class ApiServer:
             interval_seconds: int
             working_dir: str
             anchor_time: ``"HH:MM"`` to set, or ``null`` to clear
+            backend: backend name (claude/codex/local/agui/zai) to set/replace
+                the pin, or ``null`` to clear it and resume following the
+                thread/global setting
             next_run_at: float (epoch) — manual schedule reset
         """
         if err := self._require_task_repo():
@@ -745,6 +764,25 @@ class ApiServer:
                     return web.json_response({"error": str(exc)}, status=400)
                 patch_kwargs["anchor_hour"] = h
                 patch_kwargs["anchor_minute"] = m
+
+        # backend: a backend name to set/replace the pin, null to clear it
+        if "backend" in data:
+            raw_backend = data["backend"]
+            if raw_backend is None:
+                patch_kwargs["backend"] = None
+            else:
+                backend_value = str(raw_backend)
+                if backend_value not in ALL_BACKENDS:
+                    return web.json_response(
+                        {
+                            "error": (
+                                f"Unknown backend {backend_value!r}. "
+                                f"Choose: {', '.join(ALL_BACKENDS)}."
+                            )
+                        },
+                        status=400,
+                    )
+                patch_kwargs["backend"] = backend_value
 
         if patch_kwargs:
             result = await self.task_repo.update(task_id, **patch_kwargs)  # type: ignore[union-attr]
