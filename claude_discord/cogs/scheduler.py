@@ -164,6 +164,7 @@ class SchedulerCog(commands.Cog):
                 settings=self.backend_settings,
                 thread_id=surface.thread_key,
                 working_dir=task.get("working_dir"),
+                backend_override=task.get("backend"),
             )
 
             registry = getattr(self.bot, "session_registry", None)

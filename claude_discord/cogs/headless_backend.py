@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from ..claude.runner import _UNSET
@@ -11,6 +12,8 @@ if TYPE_CHECKING:
 
     from ..backend_factory import BackendFactory
     from ..backend_settings import BackendSettings
+
+logger = logging.getLogger(__name__)
 
 
 async def build_headless_runner(
@@ -24,6 +27,7 @@ async def build_headless_runner(
     allowed_tools: list[str] | None | object = _UNSET,
     permission_mode: str | None = None,
     dangerously_skip_permissions: bool | None = None,
+    backend_override: str | None = None,
 ) -> SessionBackend:
     """Build a runner for scheduler/webhook/custom-cog automation.
 
@@ -32,15 +36,31 @@ async def build_headless_runner(
     did not affect scheduled tasks or failure triage.  When a factory/settings
     pair is available, resolve the current backend at spawn time; otherwise keep
     the legacy clone behaviour.
+
+    ``backend_override`` lets a caller (e.g. a scheduled task pinned to one
+    backend) force which backend gets built, bypassing
+    ``settings.current_backend()``. Model and effort still resolve from
+    ``settings`` for that backend, so a pinned task keeps following whatever
+    model/effort is configured for it.
     """
     if factory is not None and settings is not None:
-        backend = await settings.current_backend(thread_id)
+        backend = (
+            backend_override
+            if backend_override is not None
+            else await settings.current_backend(thread_id)
+        )
         model = await settings.current_model(backend, thread_id)
         runner = factory.build(backend=backend, model=model, thread_id=thread_id)
         effort = await settings.current_effort(backend, thread_id)
         if effort is not None and hasattr(runner, "effort"):
             runner.effort = effort  # type: ignore[attr-defined]
     else:
+        if backend_override is not None:
+            logger.warning(
+                "backend_override=%r requested but no backend_factory/backend_settings "
+                "configured — falling back to the cloned base runner",
+                backend_override,
+            )
         runner = base_runner.clone(thread_id=thread_id)
 
     if working_dir is not None:
