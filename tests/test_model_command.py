@@ -160,6 +160,15 @@ class TestModelAutocomplete:
 
         assert choices[0].value == "gpt-5.6-sol"
 
+    async def test_zai_backend_suggests_latest_glm_model_first(self) -> None:
+        settings = await _settings()
+        await settings.set_backend("zai")
+        cog = _make_cog(settings)
+
+        choices = await cog._model_name_autocomplete(_channel_interaction(), "")
+
+        assert choices[0].value == "glm-5.3"
+
     async def test_filters_by_current_substring(self) -> None:
         settings = await _settings()
         cog = _make_cog(settings)
