@@ -61,6 +61,7 @@ SUGGESTED_MODELS: dict[str, list[tuple[str, str]]] = {
         ("gpt-5.5", "GPT-5.5"),
     ],
     "copilot": [
+        ("auto", "Auto routing (up to 30% savings)"),
         ("gpt-6-astra", "GPT-6-Astra — most capable"),
         ("gpt-5.6-sol", "GPT-5.6-Sol"),
         ("gpt-5.5", "GPT-5.5"),
@@ -247,6 +248,8 @@ class BackendCommandCog(commands.Cog):
             suggestions = await claude_model_choices(fallback=SUGGESTED_MODELS["claude"])
         elif backend in {"codex", "copilot"}:
             suggestions = codex_model_choices(fallback=SUGGESTED_MODELS[backend])
+            if backend == "copilot" and not any(value == "auto" for value, _ in suggestions):
+                suggestions = [("auto", "Auto routing (up to 30% savings)"), *suggestions]
         else:
             suggestions = SUGGESTED_MODELS.get(backend, [])
         current_lower = current.lower()

@@ -162,7 +162,24 @@ class TestModelAutocomplete:
         choices = await cog._model_name_autocomplete(_channel_interaction(), "")
 
         values = {c.value for c in choices}
+        assert "auto" in values
         assert values == {m for m, _ in SUGGESTED_MODELS["copilot"]}
+
+    async def test_copilot_autocomplete_injects_auto_when_discovery_lacks_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        settings = await _settings()
+        await settings.set_backend("copilot")
+        cog = _make_cog(settings)
+
+        monkeypatch.setattr(
+            "claude_discord.cogs.backend_command.codex_model_choices",
+            lambda *, fallback: [("gpt-6-astra", "GPT-6-Astra")],
+        )
+
+        choices = await cog._model_name_autocomplete(_channel_interaction(), "")
+
+        assert choices[0].value == "auto"
 
     async def test_codex_backend_suggests_latest_codex_model_first(self) -> None:
         settings = await _settings()
