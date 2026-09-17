@@ -154,6 +154,16 @@ class TestModelAutocomplete:
         # No Claude models leaked in.
         assert "sonnet" not in values
 
+    async def test_copilot_backend_suggests_copilot_models(self) -> None:
+        settings = await _settings()
+        await settings.set_backend("copilot")
+        cog = _make_cog(settings)
+
+        choices = await cog._model_name_autocomplete(_channel_interaction(), "")
+
+        values = {c.value for c in choices}
+        assert values == {m for m, _ in SUGGESTED_MODELS["copilot"]}
+
     async def test_codex_backend_suggests_latest_codex_model_first(self) -> None:
         settings = await _settings()
         await settings.set_backend("codex")

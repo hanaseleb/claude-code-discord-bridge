@@ -55,6 +55,12 @@ class TestCreateBackend:
         backend = create_backend(backend="codex", model="o4-mini")
         assert isinstance(backend, CodexRunner)
 
+    def test_copilot_backend(self) -> None:
+        from claude_code_core.codex_runner import CodexRunner
+
+        backend = create_backend(backend="copilot", model="gpt-5.6-sol")
+        assert isinstance(backend, CodexRunner)
+
     def test_agui_backend(self) -> None:
         from claude_code_core.agui_backend import AgUiBackend
 

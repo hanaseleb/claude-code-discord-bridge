@@ -1463,6 +1463,11 @@ class ClaudeChatCog(commands.Cog):
                 working_dir_override=working_dir_override,
                 effort_override=effort_override,
             )
+            backend_for_thread = (
+                await self._backend_settings.current_backend(thread.id)
+                if self._backend_settings is not None
+                else "claude"
+            )
             # Register as the sole active run BEFORE releasing the lock. Track
             # the task too so a later eviction can await our cleanup.
             self._active_runners[thread.id] = runner
@@ -1504,7 +1509,11 @@ class ClaudeChatCog(commands.Cog):
                     result_sink=result_sink,
                     backend_settings=self._backend_settings,
                     codex_command=(
-                        self._factory.codex_command if self._factory is not None else "codex"
+                        self._factory.copilot_command
+                        if self._factory is not None and backend_for_thread == "copilot"
+                        else self._factory.codex_command
+                        if self._factory is not None
+                        else "codex"
                     ),
                 )
             )

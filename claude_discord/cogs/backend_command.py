@@ -33,12 +33,14 @@ SCOPE_GLOBAL = "global"
 VALID_EFFORTS: dict[str, frozenset[str]] = {
     "claude": frozenset({"low", "medium", "high", "max"}),
     "codex": VALID_CODEX_EFFORTS,
+    "copilot": VALID_CODEX_EFFORTS,
     "local": VALID_CODEX_EFFORTS,
 }
 
 EFFORT_ORDER: dict[str, list[str]] = {
     "claude": ["low", "medium", "high", "max"],
     "codex": ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+    "copilot": ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
     "local": ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
 }
 
@@ -54,6 +56,11 @@ SUGGESTED_MODELS: dict[str, list[tuple[str, str]]] = {
     # (codex_model_choices). Kept short and generation-current so a host that
     # has never run the CLI still sees something selectable.
     "codex": [
+        ("gpt-6-astra", "GPT-6-Astra — most capable"),
+        ("gpt-5.6-sol", "GPT-5.6-Sol"),
+        ("gpt-5.5", "GPT-5.5"),
+    ],
+    "copilot": [
         ("gpt-6-astra", "GPT-6-Astra — most capable"),
         ("gpt-5.6-sol", "GPT-5.6-Sol"),
         ("gpt-5.5", "GPT-5.5"),
@@ -153,7 +160,7 @@ class BackendCommandCog(commands.Cog):
         ],
     )
     @app_commands.describe(
-        name="claude, codex, local, or agui. Omit to show current setting.",
+        name="claude, codex, copilot, local, or agui. Omit to show current setting.",
         scope=(
             "thread: only this thread; global: server-wide default. "
             "Default: thread when invoked in a thread, otherwise global."
@@ -216,7 +223,7 @@ class BackendCommandCog(commands.Cog):
             if resolved_scope == SCOPE_THREAD and target_thread_id is not None
             else "**globally**"
         )
-        emoji = {"codex": "🌀", "local": "🏠", "agui": "🔌"}.get(name, "🤖")
+        emoji = {"codex": "🌀", "copilot": "🐙", "local": "🏠", "agui": "🔌"}.get(name, "🤖")
         await interaction.response.send_message(
             f"{emoji} Backend set to `{name}` {scope_label}. Next session will use it.",
             ephemeral=False,
@@ -238,8 +245,8 @@ class BackendCommandCog(commands.Cog):
         backend = await self._backend_for_autocomplete(interaction)
         if backend == "claude":
             suggestions = await claude_model_choices(fallback=SUGGESTED_MODELS["claude"])
-        elif backend == "codex":
-            suggestions = codex_model_choices(fallback=SUGGESTED_MODELS["codex"])
+        elif backend in {"codex", "copilot"}:
+            suggestions = codex_model_choices(fallback=SUGGESTED_MODELS[backend])
         else:
             suggestions = SUGGESTED_MODELS.get(backend, [])
         current_lower = current.lower()

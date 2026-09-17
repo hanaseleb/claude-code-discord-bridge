@@ -61,6 +61,7 @@ def load_config() -> dict[str, str]:
         # the user switches backend at runtime via /backend.
         "claude_command": _env("CCDB_CLAUDE_COMMAND", "CLAUDE_COMMAND", ""),
         "codex_command": os.getenv("CCDB_CODEX_COMMAND", ""),
+        "copilot_command": os.getenv("CCDB_COPILOT_COMMAND", ""),
         "agui_url": os.getenv("CCDB_AGUI_URL", ""),
         "agui_token": os.getenv("CCDB_AGUI_TOKEN", ""),
         "model": _env("CCDB_MODEL", "CLAUDE_MODEL", default_model),
@@ -108,7 +109,7 @@ async def main() -> None:
     if config["allowed_tools"]:
         allowed_tools = [t.strip() for t in config["allowed_tools"].split(",") if t.strip()] or None
 
-    # Create runner via backend factory (CCDB_BACKEND=claude|codex)
+    # Create runner via backend factory (CCDB_BACKEND=claude|codex|copilot|local|agui)
     backend_name = config["backend"]
     # BackendFactory is the runtime authority for building Claude/Codex
     # runners on demand (e.g. when the user switches via /backend).
@@ -120,6 +121,9 @@ async def main() -> None:
         or "claude",
         codex_command=config["codex_command"]
         or (config["command"] if backend_name == "codex" else "")
+        or "codex",
+        copilot_command=config["copilot_command"]
+        or (config["command"] if backend_name == "copilot" else "")
         or "codex",
         permission_mode=config["permission_mode"],
         working_dir=config["working_dir"] or None,

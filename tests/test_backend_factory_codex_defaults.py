@@ -16,6 +16,7 @@ def _factory(**overrides: object) -> BackendFactory:
     defaults: dict[str, object] = {
         "claude_command": "claude",
         "codex_command": "codex",
+        "copilot_command": "copilot",
         "permission_mode": "acceptEdits",
         "working_dir": None,
         "timeout_seconds": 300,
@@ -36,6 +37,10 @@ class TestCodexDefaultModel:
     def test_default_model_for_claude_is_sonnet(self) -> None:
         assert _factory().default_model_for("claude") == "sonnet"
 
+    def test_default_model_for_copilot_is_none(self) -> None:
+        assert DEFAULT_MODEL["copilot"] is None
+        assert _factory().default_model_for("copilot") is None
+
     def test_build_codex_without_model_defers_to_cli(self) -> None:
         runner = _factory().build(backend="codex")
         assert isinstance(runner, CodexRunner)
@@ -47,6 +52,13 @@ class TestCodexDefaultModel:
         runner = _factory().build(backend="codex", model="gpt-5.5")
         assert isinstance(runner, CodexRunner)
         assert runner.model == "gpt-5.5"
+
+    def test_build_copilot_without_model_defers_to_cli(self) -> None:
+        runner = _factory().build(backend="copilot")
+        assert isinstance(runner, CodexRunner)
+        assert runner.command == "copilot"
+        assert runner.model is None
+        assert "--model" not in runner._build_args("hi", session_id=None)
 
 
 class TestEnvEffortDoesNotLeakToCodex:

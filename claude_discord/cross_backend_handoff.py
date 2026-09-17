@@ -52,7 +52,7 @@ class ConversationHistoryReader:
         if backend == "claude":
             path = self._find_claude_session(session_id)
             messages = self._read_claude(path) if path is not None else []
-        elif backend in ("codex", "local"):
+        elif backend in ("codex", "copilot", "local"):
             # Same CLI, same transcript format — but local sessions live in the
             # ccdb-owned CODEX_HOME, not the user's ~/.codex.
             path = self._find_codex_session(session_id, local=backend == "local")

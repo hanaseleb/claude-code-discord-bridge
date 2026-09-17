@@ -29,10 +29,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL: dict[str, str | None] = {
     "claude": "sonnet",
     "codex": None,
+    "copilot": None,
     "local": None,
     "agui": None,
 }
-DEFAULT_COMMAND = {"claude": "claude", "codex": "codex", "local": "codex", "agui": "ag-ui"}
+DEFAULT_COMMAND = {
+    "claude": "claude",
+    "codex": "codex",
+    "copilot": "codex",
+    "local": "codex",
+    "agui": "ag-ui",
+}
 
 
 class BackendFactory:
@@ -43,6 +50,7 @@ class BackendFactory:
         *,
         claude_command: str,
         codex_command: str,
+        copilot_command: str = "",
         permission_mode: str,
         working_dir: str | None,
         timeout_seconds: int,
@@ -57,6 +65,7 @@ class BackendFactory:
     ) -> None:
         self.claude_command = claude_command or DEFAULT_COMMAND["claude"]
         self.codex_command = codex_command or DEFAULT_COMMAND["codex"]
+        self.copilot_command = copilot_command or codex_command or DEFAULT_COMMAND["copilot"]
         self.permission_mode = permission_mode
         self.working_dir = working_dir
         self.timeout_seconds = timeout_seconds
@@ -76,6 +85,8 @@ class BackendFactory:
             # The local backend is the same CLI, pointed at a ccdb-owned
             # CODEX_HOME that pins it to a model on your own hardware.
             return self.codex_command
+        if backend == "copilot":
+            return self.copilot_command
         if backend == "agui":
             return DEFAULT_COMMAND["agui"]
         raise ValueError(f"Unknown backend: {backend!r}")
@@ -120,7 +131,10 @@ class BackendFactory:
         # the operator's standing instructions silently Claude-only, which
         # matters most on `local`: a small model needs a short, blunt directive
         # far more than a frontier one does.
-        if backend in ("claude", "codex", "local") and self.append_system_prompt is not None:
+        if (
+            backend in ("claude", "codex", "copilot", "local")
+            and self.append_system_prompt is not None
+        ):
             kwargs["append_system_prompt"] = self.append_system_prompt
         # The env-level ``effort`` stays Claude-only. Codex effort is resolved
         # per-backend from BackendSettings at spawn time, and the valid values
