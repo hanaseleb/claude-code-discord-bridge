@@ -3,20 +3,61 @@
 > **注意:** これは英語のオリジナルドキュメントを自動翻訳したものです。
 > 内容に相違がある場合は、[英語版](../../README.md)が優先されます。
 
-# Claude & Codex Discord Bridge
+# Ebi Agent Chat Relay
 
-*パッケージ名: `claude-code-discord-bridge`（ケバブケース）*
+*旧称は Claude Code Discord Bridge、その後 Claude & Codex Discord Bridge。既存の識別子は
+すべて引き続き利用できます。パッケージ名は `claude-code-discord-bridge`（ケバブケース）、
+コマンドは `ccdb` で、このドキュメントでも略称として `ccdb` を使用します。*
 
-[![CI](https://github.com/ebibibi/claude-code-discord-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/ebibibi/claude-code-discord-bridge/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/ebibibi/claude-code-discord-bridge/actions/workflows/codeql.yml/badge.svg)](https://github.com/ebibibi/claude-code-discord-bridge/actions/workflows/codeql.yml)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![CI](https://github.com/ebibibi/ebi-agent-chat-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/ebibibi/ebi-agent-chat-relay/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/ebibibi/ebi-agent-chat-relay/actions/workflows/codeql.yml/badge.svg)](https://github.com/ebibibi/ebi-agent-chat-relay/actions/workflows/codeql.yml)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**スマホの Discord から Claude Code _または_ OpenAI Codex をガンガン使おう。複数スレッドを同時に回して、本格開発もOK。**
+**Discord または Microsoft Teams からコーディングエージェントを実行。Claude Code、
+OpenAI Codex、ローカルモデル、または互換性のある AG-UI エージェントを、同じ会話の背後で
+選択できます。**
 
-Discord のスレッドを開くだけで、Claude Code または OpenAI Codex のセッションが立ち上がります。スマートフォンから何スレッドでも並行して動かせます — あるスレッドで機能開発、別のスレッドで PR レビュー、さらに別のスレッドでバックグラウンドタスク。スレッドごとにバックエンドを混在させながら、全部同時進行。コンフリクトしないように、ブリッジがセッション間の調整を完全自動化します。
+Ebi Agent Chat Relay は、Discord の各スレッドまたは Teams の各会話を、分離された永続的な
+エージェントセッションに変換します。ある会話で機能を開発し、別の会話で PR をレビューし、さらに
+別の会話でバックグラウンドタスクを実行できます。Discord ではスレッドごとにバックエンドを
+混在でき、v4 の Teams では設定済みのグローバルバックエンドを使用します。セッション同士が
+互いの作業を壊さないよう、リレーが協調処理を担います。
 
-**既存のサブスクリプションをそのまま活用。API キーの設定は不要。** ccdb は公式 CLI の上で動作します — Claude Code（[Claude Pro/Max サブスクリプション](https://claude.ai/pricing)に含まれる）と OpenAI Codex（[ChatGPT Plus/Pro/Business](https://chatgpt.com)に含まれる）。`/backend` でバックエンドを切り替えるか、スレッドごとに設定 — 予測可能なコストで Discord 経由で両方の AI を利用できます。
+**名称変更の理由。** 当初は 1 つの AI と 1 つのチャットアプリを結ぶブリッジでしたが、現在は
+2 つの本番対応フロントエンドと 4 つのバックエンドを選べるリレーになりました。旧名称を
+構成していた 4 語のうち 3 語が実態に合わなくなったためです。判断の詳細は
+[ADR-0001](../adr/0001-adopt-ebi-agent-chat-relay.md)、互換性を維持した移行方法は
+[名称変更計画](../RENAME_PLAN.md)を参照してください。
+
+**既存のサブスクリプション、自前のインフラ、リモートエージェントを利用できます。** ccdb は公式の
+Claude Code CLI と Codex CLI、Codex 互換のローカルエンドポイント、または AG-UI HTTP/SSE
+エージェントを実行できます。Discord では実行時に `/backend` で切り替えられ、v4 の Teams では同じファクトリーを
+通じて設定済みバックエンドを使用します。
+
+## v4 の新機能
+
+Version 4 では、**人がどこで会話するか**と**どのエージェントが作業するか**を独立した選択肢として
+明確に分けました。対応するどのフロントエンドからでも、対応するどのバックエンドも利用できます。
+
+### フロントエンド × バックエンド
+
+| | Claude Code | OpenAI Codex | Local | AG-UI |
+|---|---:|---:|---:|---:|
+| Discord | ✅ | ✅ | ✅ | ✅ |
+| Microsoft Teams | ✅ | ✅ | ✅ | ✅ |
+
+- **Discord** は移行不要のデフォルトです。既存環境はこれまでとまったく同じように起動します。
+- **Microsoft Teams** は、小さな公開レシーバーと、プライベートなセッションホストから outbound 接続する
+  `ActivityPuller` によって本番対応しています。`CCDB_FRONTENDS=discord,teams` を設定すれば、
+  Discord と Teams を 1 つのプロセスで同時に実行できます。
+- **AG-UI** は、Agent–User Interaction Protocol を実装する HTTP/SSE エージェントへ、どちらの
+  チャットサーフェスからも接続できます。Claude Code、Codex、安全策付きローカルバックエンドも引き続き
+  利用できます。
+
+まず[バックエンドガイド](../backends.md)を参照してください。Teams は、完全版の
+[Microsoft Teams セットアップガイド](../teams-setup.md)に沿って構築し、詳細は
+[サーフェスの動作](../teams.md)と[リレーのセキュリティモデル](../teams-relay.md)を参照してください。
 
 **[English](../../README.md)** | **[简体中文](../zh-CN/README.md)** | **[한국어](../ko/README.md)** | **[Español](../es/README.md)** | **[Português](../pt-BR/README.md)** | **[Français](../fr/README.md)**
 
@@ -105,6 +146,18 @@ curl -X POST "$CCDB_API_URL/api/lounge" \
 curl "$CCDB_API_URL/api/lounge"
 ```
 
+**投稿は短く — 200 文字、1〜2 行まで。** ラウンジのメッセージは、それ以降に開始する
+すべてのセッションに注入されます。つまり長さのコストは投稿者だけでなく全セッションの
+共有負担になります。投稿すべきは「今なにをしているか」「なにが変わったか」だけです。
+原因の経緯、マージした PR の羅列、得られた教訓などは、あとから検索できる PR や
+リポジトリのドキュメントに書いてください。この制限は、セッション終了時に残す
+クロージングノートにも同じく適用されます。
+
+この制限は拒否ではなく「ひとこと注意」です。長すぎるメッセージも**全文がそのまま保存**
+され（切り詰めると、いちばん重要な一文が失われるため）、`POST /api/lounge` が追加で
+`hint` フィールドを返し、実際の文字数と次回省くべき内容を投稿者に伝えます。
+プロンプト上のルールだけでは容易に無視されることが分かったため、API 側でも伝えます。
+
 ラウンジチャンネルは人間が見るアクティビティフィードとしても機能します — Discord で開けば、すべてのアクティブな Claude セッションが今何をしているかを一目で確認できます。
 
 **ラウンジ vs. 協調 API。** 以下のクロスセッションエンドポイントが揃った今、ラウンジはもう「誰が実行中か」を*調べたり*、他のスレッドを読んだり、リソースをロックしたりする場所ではありません — `GET /api/sessions`、`GET /api/threads/{id}/messages`、`POST /api/claims` がそれを正確にこなし、一度も投稿していないセッションまで拾い上げます。ラウンジが担うのは、構造化された呼び出しでは運べないもの、すなわち **単一の宛先を持たないブロードキャスト通知**（「Bot を再起動します」「リリース v3.2.0 を切りました」）と、**行動を起こす前に宣言する意図**です。ラウンジはデータベースではなく、その部屋の「お知らせ」だと捉えてください。
@@ -128,7 +181,7 @@ curl "$CCDB_API_URL/api/sessions?exclude_thread=$DISCORD_THREAD_ID"
 curl "$CCDB_API_URL/api/threads/1529338965000192110/messages?limit=30"
 ```
 
-`/api/sessions` は 3 つの情報源をマージします: `sessions` テーブル（created_at、作業ディレクトリ、バックエンド）、インメモリレジストリ（各ライブセッションが*今まさに*何をしているか）、そして各スレッドの最新のラウンジメモです。ターンの実行中のセッションは `"state": "running"` として現れます — ラウンジに一度も投稿していないセッションも含まれ、まさにそういうときこそこの機能が効きます。セッション自身は Discord トークンを持たないため、読み取りは Bot が代行し、エンドポイントは localhost のコントロールプレーン上に留まります。
+`/api/sessions` は 3 つの情報源をマージします: `sessions` テーブル（created_at、作業ディレクトリ、バックエンド）、インメモリレジストリ（各ライブセッションが*今まさに*何をしているか）、そして各スレッドの最新のラウンジメモです。ターンの実行中のセッションは `"state": "running"` として現れます — ラウンジに一度も投稿していないセッションも含まれ、まさにそういうときこそこの機能が効きます。実行中のターンがない保存済み会話は `"state": "history"` として現れます。これは再開可能な履歴であり、AIが作業やユーザー入力を待っているという意味ではありません。セッション自身は Discord トークンを持たないため、読み取りは Bot が代行し、エンドポイントは localhost のコントロールプレーン上に留まります。
 
 ### リソースクレーム
 
@@ -204,7 +257,7 @@ curl -X POST "$CCDB_API_URL/api/spawn" \
 # スレッド作成後すぐに返答し、Claude はバックグラウンドで実行
 ```
 
-**遅延起動 (`auto_start=false`)** — スレッドを作成してシードメッセージを投稿するが、Claude をすぐには起動しない。ユーザーが返信したときに初めて Claude が起動し、シードメッセージのコンテキストを自動的に受け取ります。
+**遅延起動 (`auto_start=false`)** — スレッドを作成してシードメッセージを投稿するが、Claude をすぐには起動しない。ユーザーが返信したときに初めて Claude が起動し、シードメッセージのコンテキストを自動的に受け取ります。シードが Discord の 1 メッセージあたりの上限を超える場合は複数のメッセージに分割して投稿されますが、そのすべてがコンテキストとして復元されます——シードは最初の人間の返信までを読み取るため、文章の途中で切り捨てられることはありません。
 
 ```bash
 # 通知を投稿し、ユーザーが返信したときに Claude を起動
@@ -219,11 +272,25 @@ curl -X POST "$CCDB_API_URL/api/spawn" \
 
 デイリーブリーフィングや CI アラートなど、情報を先に表示してユーザーが Claude に問いかけるかどうかを判断するワークフローに便利です。
 
+**リクエスト元をスレッドに追加する（`user_id`）** — スポーンされたスレッドは Bot が作成するため、誰も見ていない状態で生まれます。チャンネル一覧の中に埋もれ、探しに行かないと気づけません。Discord の `user_id` を渡すと、ccdb はシードメッセージを投稿する**前に**そのユーザーをスレッドメンバーとして追加します。スレッドは参加済み一覧に現れ、ユーザーは最初の 1 行目からやり取りを追えます。
+
+```bash
+curl -X POST "$CCDB_API_URL/api/spawn" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "失敗した nightly ビルドをトリアージして",
+    "thread_name": "Nightly Triage",
+    "user_id": 123456789012345678
+  }'
+```
+
+正の整数でない `user_id` は呼び出し側のバグなので 400 で拒否します。一方、Discord 側でのメンバー追加失敗は「見えにくい」だけの問題なので抑制されます。スレッドを作成して Claude をすでに起動できたスポーンを、失敗として報告することはありません。
+
 Claude のサブプロセスには `DISCORD_THREAD_ID` 環境変数が渡されるため、実行中のセッションから子セッションを起動して作業を並列化できます。
 
 ### 認証済み外部インジェストと結果取得 (`/api/ingest`)
 
-`POST /api/ingest` は、信頼できない外部クライアント（ブラウザ拡張機能、モバイルショートカット、webhook）向けの**認証済み、添付ファイル対応スポーン**です。`/api/spawn`（信頼済み、localhost）とは異なり、専用の `ingest_token`（`CCDB_INGEST_TOKEN` で設定。`api_secret` とは独立）が必要で、base64 ファイル添付をディスクに書き込み、スポーンされたセッションが読み取れるようにします。実際の Discord スレッドを作成するため、すべてのやり取りが観察可能です。
+`POST /api/ingest` は、信頼できない外部クライアント（ブラウザ拡張機能、モバイルショートカット、webhook）向けの**認証済み、添付ファイル対応スポーン**です。`/api/spawn`（信頼済み、localhost）とは異なり、専用の `ingest_token`（`CCDB_INGEST_TOKEN` で設定。`api_secret` とは独立）が必要で、base64 ファイル添付を `{working_dir}/ingest/{thread_id}/` に書き込み、スポーンされたセッションが読み取れるようにします。実際の Discord スレッドを作成するため、すべてのやり取りが観察可能です。
 
 セッションは**インタラクティブ**（返信し続けられる本物の Discord スレッド）ですが、最終回答をプログラム的に取得することもできます。結果取得が設定されている場合（`setup_bridge()` 経由で自動接続）、レスポンスに `result_id` が含まれ、`GET /api/ingest/{result_id}` でセッションの最終返信をポーリングできます。同じ最終回答は Discord スレッドにも `ccdb-answer.md` として添付されるため、外部連携は添付ファイルを回答本文の正本として扱えます。これがラウンドトリップパターンです: スレッド + 添付ファイルを投稿 → 待機 → 回答ファイルまたはポーリング結果を読む → 自分のシステム（Teams スレッドなど）に書き戻す。一方で Discord が履歴を保持します。
 
@@ -242,6 +309,12 @@ curl "$CCDB_API_URL/api/ingest/ab12…" -H "Authorization: Bearer $CCDB_INGEST_T
 ```
 
 このエンドポイントはオプトイン方式です。`ingest_token` が設定されていない場合、`POST` は `503` を返します。結果取得が利用できない場合、`POST` は `result_id` を省略し、`GET /api/ingest/{id}` は `503` を返します — スポーン動作は変わりません。リクエスト本文と添付ファイルは結果ストアに保存されません（状態、最終テキスト、スレッド ID のみ）。結果は最大 200 件です。
+
+#### ZIP バンドルは到着時に展開される
+
+クライアントはスレッド 1 本分のファイルを 1 つの `.zip` にまとめることで、20 添付 / 50 MB のリクエスト上限を回避できます。ccdb はそれを隣接する `<name>_files/` ディレクトリへ展開し、アーカイブそのものではなくメンバーのパスをセッションに渡します。プロンプトはパスだけで済み、セッションは必要なものだけを読みます。展開には上限があり（メンバー 5000 件、展開後 200 MB）、展開先ディレクトリの外に出るメンバーはスキップされます。
+
+アーカイブが置き換えられるのは、**展開が実際にファイルを生成したときだけ**です。`zipfile.is_zipfile()` はファイル*末尾*付近の end-of-central-directory レコードに一致するだけで、ファイルの*先頭*がアーカイブである必要はありません。そのため大きな不透明バイナリ（Windows の `.evtx` ログ、メモリダンプ、パケットキャプチャなど）が偶然「空のアーカイブ」と判定されることがあります。そうしたファイルや、本当に空の zip は、「何もない状態に展開されて削除される」のではなく、届いたそのままの形で保持されます。拒否された、あるいは壊れたアーカイブも同様に手を触れずに残されます。取り込み時に失われるものはありません。
 
 #### 添付ファイル到達の検証 (`attachments_manifest`)
 
@@ -282,6 +355,31 @@ ccdb は各 `embedded` エントリを、届いたファイルに対して **sha
 
 `DELETE /api/ingest/summary?key=…` は完全な再サマリーを強制します。`marker` は ccdb にとって不透明で、セッションが触ることは決してないため、ずれることがありません。完全に後方互換かつ Zero-Config: `summary_key` を省略すればインジェストは従来どおり動作します。外部リスナーは `GET`（読み取り）ルートのみを公開します — サマリーの書き込みは localhost 限定の操作です。`ingest_results` に `summary_key`/`pending_marker` カラムが追加されます（既存 DB では自動マイグレーション）。
 
+#### 上流スレッドを生ファイルとしてミラーリング (`/api/teams/sync`)
+
+上記の継続サマリーが保持するのは、上流スレッドの*蒸留された要約*です。代わりに**生の会話そのもの**をディスク上に置きたいとき — セッションが実際に何と言われたかを読めるようにし、回答をその内容と突き合わせて検証できるようにしたいとき — この sync のペアを使います。メッセージ 1 件につき 1 ファイルを保存し、クライアント側には**同期状態を一切持たせません**:
+
+1. `POST /api/teams/sync/plan` — クライアントは見えているすべてのメッセージの ID + コンテンツハッシュを送ります（本文は送らないため、返信 1000 件のスレッドでも数十 KB で済みます）。ccdb は `want_messages` / `want_attachments` を返します: 未取得のもの、またはハッシュが異なるものだけの部分集合に加え、クライアントが早めにスクロールを打ち切れるよう `newest_have_mid` も返します。
+2. `POST /api/teams/sync/push` — クライアントはその部分集合だけをアップロードします。添付ファイルのバイト列は base64 で送ります。
+
+ハッシュが*変わった*ことと ID を*一度も見たことがない*ことは同じ問いなので、上流の**編集**への追従は別機能ではありません — 同じ比較から自然に導かれるものであり、置き換えられた旧版は上書きされずに `_history/` 配下に保存されます。
+
+```
+{title}--{root_mid}/
+  thread.json      識別情報、カバレッジ、未解決の添付ファイル欠落
+  chain.jsonl      追記専用の順序 + 改訂ジャーナル
+  README.md        セッションがこのフォルダをどう読むべきか
+  messages/{mid}.md          メッセージ 1 件。YAML frontmatter 付き（author, timestamp, prev, hash, edited, deleted）
+  messages/{mid}/…           そのメッセージの添付ファイル
+  _history/{mid}.{hash}.md   置き換えられた旧版
+```
+
+`next` は**意図的に**保存しません: 保存すると、新しい返信が来るたびに既存ファイルを書き換えることになるからです。順序は `chain.jsonl` が持ち、識別子が上流の Unix ミリ秒メッセージ ID であるため、ファイル名はそれ自体で時系列順にソートされます。
+
+このディレクトリが唯一の真実です — `plan` はディレクトリを読んで答えます。メッセージファイルを削除すれば次回の sync で再取得され、中断された push は次回の sync で完了し、ボタンを 2 回押しても何も起きません（冪等）。保存できなかった添付ファイルが成功として報告されることは**決してありません**: `thread.json`、フォルダの `README.md`、push のレスポンスに記載され、実際にバイト列が届くまで `want_attachments` に現れ続けます。
+
+スレッドはデフォルトで `{working_dir}/teams` 配下（`ingest/` の隣）に置かれます — エディタで普段読んでいるノート vault など別の場所に置きたい場合は `CCDB_TEAMS_VAULT_ROOT`（または `teams_vault_root=`）を設定してください。両ルートとも `/api/ingest` と同じ ingest bearer トークンで保護され、外部リスナーからも利用でき、セッションのスポーンは一切行いません。
+
 ### スタートアップリジューム
 
 Bot の再起動中にセッションが中断された場合、Bot が再起動したときに自動的に再開されます。リジューム登録の方法は 3 つあります:
@@ -290,14 +388,17 @@ Bot の再起動中にセッションが中断された場合、Bot が再起動
 - **自動（任意のシャットダウン）** — `ClaudeChatCog.cog_unload()` が任意のシャットダウン方法（`systemctl stop`、`bot.close()`、SIGTERM 等）でも実行中のセッションを自動登録します。
 - **手動** — `POST /api/mark-resume` を直接呼び出して登録することもできます。
 
-### バックエンド切り替え — Claude / Codex をオンデマンドで
+### バックエンド切り替え — Claude / Codex / AG-UI をオンデマンドで
 
 ccdb 3.0 では、Bot を再起動せずにどの AI が次のセッションを処理するかを切り替える 3 つのスラッシュコマンドが追加されました:
 
-- `/backend [name] [scope]` — バックエンドの表示または切り替え。`name` は `claude` または `codex`。`scope` は `thread`（このスレッドのみ）または `global`（サーバー全体のデフォルト）。`scope` を省略すると自動解決: スレッド内ではそのスレッドにスコープ、それ以外ではグローバルデフォルトを設定。
+- `/backend [name] [scope]` — バックエンドの表示または切り替え。`name` は `claude`、`codex`、`local`、または `agui`。`scope` は `thread`（このスレッドのみ）または `global`（サーバー全体のデフォルト）。`scope` を省略すると自動解決: スレッド内ではそのスレッドにスコープ、それ以外ではグローバルデフォルトを設定。
 - `/model [name] [scope]` — **現在の**バックエンドで使用するモデルの表示または切り替え。各バックエンドは独自のモデル設定を記憶するため、バックエンドを切り替えても好みのモデルが保持されます。バックエンドのモデルを未設定にすると、その CLI 自身のデフォルトに委ねられます（たとえば Codex は `~/.codex/config.toml` の `model` を使用するため、ccdb が特定バージョンに固定せずコンソールのデフォルトに追従します）。
-  `name` のオートコンプリートは**実行時に取得**されます。ccdb が Anthropic のモデル一覧エンドポイントへ（Claude Code CLI がすでに持っている認証情報を使って）アカウントから見えるモデルを問い合わせるため、今朝リリースされたばかりのモデルでも ccdb をアップグレードすることなくドロップダウンに現れます。エイリアス（`opus`、`sonnet` など）には、現時点でそのエイリアスが解決される実際のモデルが併記されます。オフライン時・未認証時・Bedrock/Vertex/Foundry 利用時は、小さな静的リストへ黙ってフォールバックします。`CCDB_MODEL_DISCOVERY=0` を設定すると常にその静的リストを使用します。Codex の候補は静的なままです（Codex CLI はモデル一覧を公開していないため）— 任意の id を直接入力すれば従来どおり動作します。
-- `/effort [level] [scope]` — 現在のバックエンドで使用する**推論の強度**の表示または切り替え。有効なレベルはバックエンドごとに異なり、Claude は `low/medium/high/max`、Codex は `minimal/low/medium/high/xhigh`（CLI の `model_reasoning_effort` にマッピング）を受け付けます。未設定にすると CLI のデフォルトに委ねられます。
+  `name` のオートコンプリートは**実行時に取得**されます。ccdb が Anthropic のモデル一覧エンドポイントへ（Claude Code CLI がすでに持っている認証情報を使って）アカウントから見えるモデルを問い合わせるため、今朝リリースされたばかりのモデルでも ccdb をアップグレードすることなくドロップダウンに現れます。エイリアス（`opus`、`sonnet` など）には、現時点でそのエイリアスが解決される実際のモデルが併記されます。オフライン時・未認証時・Bedrock/Vertex/Foundry 利用時は、小さな静的リストへ黙ってフォールバックします。`CCDB_MODEL_DISCOVERY=0` を設定すると常にその静的リストを使用します。Codex の候補も同様に実行時に取得されますが、こちらはローカルで完結します。Codex CLI にはモデル一覧のコマンドがないため、ccdb は **CLI 自身がすでに取得してディスクへ書き出したカタログ**（`$CODEX_HOME/models_cache.json`）を読みます。OpenAI を呼び出すのは ccdb ではなく Codex CLI です。そのため `gpt-6-astra` のような新世代も、Codex CLI が一度それを見た時点でドロップダウンに現れます。このホストで Codex CLI を一度も実行していない場合は、小さな静的リストへフォールバックします。いずれの場合も、任意の id を直接入力すれば従来どおり動作します。
+- `/effort [level] [scope]` — 現在のバックエンドで使用する**推論の強度**の表示または切り替え。有効なレベルはバックエンドごとに異なり、Claude は `low/medium/high/max`、Codex は `minimal/low/medium/high/xhigh/max/ultra`（CLI の `model_reasoning_effort` にマッピング）を受け付けます。この Codex 側の一覧は**モデル横断の和集合**であり、どれか 1 つのモデルが全部を受け付けるという意味ではありません — `minimal` は旧世代の GPT-5.x のみ、`max`/`ultra` は GPT-5.6 と GPT-6 のみが対応します。選択中のモデルが対応しないレベルは Codex CLI 側が拒否し、そのエラーはスレッドに届きます。未設定にすると CLI のデフォルトに委ねられます。
+- `/ollama status|list|ps|show|pull|rm|use` — `local` バックエンドの背後にあるランタイムを管理します。`/backend` と `/model` はモデルを「選ぶ」ことしかできず、何がインストールされているか・何なら載るか・いまメモリ上に何が常駐しているかには答えられません。しかしクラウドのバックエンドが使えない状況では、重要なのはまさにその問いです。`/ollama` は Ollama 自身の API をそのまま写した形でそれらに答え、モデル引数はすべてオートコンプリートされます。`tools` 能力を持たないモデルには警告を出し（Codex はツール呼び出しでしか動作しないため、そうしたモデルは編集を実行せず*説明するだけ*になります）、選択中のモデルの削除は拒否します — [docs/local-backend.md](../local-backend.md#managing-the-runtime-ollama) 参照。
+
+**ローカルモデルに環境変数はありません。** `CCDB_LOCAL_MODEL` は削除されました。Discord 上の選択と食い違いうる、2 つ目の見えない正本だったためです。`/ollama use`（または `/model`）で選んだものがそのまま実行され、`/ollama list` はそれを `▶` で示します。
 
 3 つのコマンドはいずれも `SettingsRepository` 経由で SQLite に永続化されるため、Bot を再起動しても設定が保持されます。引数なしで呼び出すと、現在のグローバルデフォルトとスレッドごとのオーバーライドを表示します。
 
@@ -318,10 +419,11 @@ ccdb がバックエンド情報を記録する前に作成されたレコード
 
 ```text
 /backend codex                        # global → codex (next new sessions use codex)
-/model gpt-5-codex                    # global → codex uses gpt-5-codex
+/model gpt-6-astra                    # global → codex uses GPT-6
 /effort xhigh                          # global → codex reasons at xhigh effort
                                        # …open a thread, send a message…
 /backend claude scope:thread          # this thread only → switch back to claude
+/backend agui scope:thread            # this thread only → configured remote AG-UI agent
 /model opus scope:thread              # this thread only → claude/opus
 /effort max scope:thread              # this thread only → claude reasons at max
                                        # other threads keep the global codex defaults
@@ -329,7 +431,7 @@ ccdb がバックエンド情報を記録する前に作成されたレコード
 
 内部の仕組み:
 
-- `BackendFactory` — 起動時に静的な設定（バックエンドごとのコマンドパス、パーミッションモード、作業ディレクトリ、許可ツール、タイムアウト、append-system-prompt、effort、api_port、api_secret）を取り込み、必要に応じて `ClaudeRunner` または `CodexRunner` を新規生成。`api_port` は REST API サーバー起動後に `setup_bridge` が自動で設定するため、Factory 経由で生成されたランナーは常に `CCDB_API_URL` がサブプロセス環境に注入される。
+- `BackendFactory` — 起動時に静的な設定（バックエンドごとのコマンドパスまたは AG-UI endpoint、パーミッションモード、作業ディレクトリ、許可ツール、タイムアウト、append-system-prompt、effort、api_port、api_secret）を取り込み、必要に応じて `ClaudeRunner`、`CodexRunner`、または `AgUiBackend` を新規生成。`api_port` は REST API サーバー起動後に `setup_bridge` が自動で設定するため、Factory 経由で生成された CLI runner は常に `CCDB_API_URL` がサブプロセス環境に注入される。
 - `BackendSettings` — **スレッド > グローバル > 環境変数**の優先順位でアクティブなバックエンドを解決し、スラッシュコマンドからの書き込みを永続化する `SettingsRepository` の薄いラッパー。
 - `SessionBackend` プロトコル — 両方のランナーが満たす抽象インターフェース。内部配管（Cog、embed、ビュー、スケジューラー、Webhook トリガー）は `SessionBackend` を受け取り、具体的なランナークラスには依存しない。
 
@@ -344,8 +446,10 @@ ccdb がバックエンド情報を記録する前に作成されたレコード
 #### 🔗 セッションの基本
 - **チャットのみモード** — `CHAT_ONLY_CHANNEL_IDS` にチャンネルを設定すると、Claude のテキスト応答のみを表示。ツール embed、思考ブロック、セッション開始/完了 embed、Todo リストはすべて非表示。許可リクエストと `AskUserQuestion` は常に表示。技術的な詳細を見せたくないパブリックチャンネルに最適。
 - **Thread = Session** — Discord スレッドと Claude Code セッションの 1:1 マッピング
+- **スレッドは 1 週間表示され続ける** — ccdb が作成するすべてのスレッドは Discord の自動アーカイブ期間の最大値（7 日）を指定します。まだ作業中の会話が、最後の返信から 1 時間でサイドバーから消えることなく、チャンネルのスレッド一覧に残り続けます
 - **ゴール追跡** — `/goal <条件>` で完了条件を設定。Claude は条件を満たすまで継続して作業します。条件を省略するとステータス確認、`clear` を渡すとキャンセル
 - **セッション永続化** — `--resume` で複数メッセージをまたいだ会話を継続
+- **バックエンド間の会話引き継ぎ** — 実行中のスレッドを Claude と Codex の間で切り替えると、直前のバックエンドのローカル JSONL からサイズを制限したテキストのみの内容を読み取り、新しいネイティブセッションの初期文脈として渡します。手動での要約やコピペは不要
 - **Codex リジュームの自動復旧** — リジュームした Codex セッションで出力開始前に WebSocket 切断が繰り返された場合、ccdb は以前の会話からサイズを制限したテキストのみの会話履歴を引き継いで代替セッションを開始。画像やツールのデータは除外
 - **並行セッション** — 設定可能な上限での複数並行セッション
 - **削除せず停止** — `/stop` でセッションを保持したまま停止し、リジューム可能
@@ -383,7 +487,7 @@ ccdb がバックエンド情報を記録する前に作成されたレコード
 
 ### 並行処理と協調
 - **Worktree 指示の自動注入** — すべてのセッションに `git worktree` を使うよう指示
-- **Worktree の自動クリーンアップ** — セッション終了時および Bot 起動時に `wt-{thread_id}` ディレクトリを自動削除。未コミットの変更がある場合は絶対に削除しない（安全性保証）
+- **Worktree の自動クリーンアップ** — `WORKTREE_BASE_DIR` の設定が必要。未設定でも worktree 作成の指示自体は出るため、ディレクトリが無言で溜まり続けます。設定するとセッション終了時に削除し、Bot 起動時には孤児を一掃します。判定に使うのはディレクトリ名ではなく `session/{thread_id}` ブランチなので、セッションが追加で作ったラベル付き worktree（`wt-{thread_id}-obsidian` や `wt-obsidian-{thread_id}`）も回収対象になります。未コミットの変更がある場合は絶対に削除しない（安全性保証）
 - **アクティブセッションレジストリ** — インメモリレジストリ。各セッションが他のセッションの状況を把握
 - **AI Lounge** — 共有「控え室」チャンネル。コンテキストはバックエンド固有のシステム／開発者指示として注入（履歴に蓄積しないため長期セッションでも「Prompt is too long」が発生しない）。セッションが意図を投稿し、互いのステータスを確認し、破壊的な操作前にチェックします。人間には live アクティビティフィードとして見えます
 - **クロスセッション可観測性** — `GET /api/sessions` がすべてのセッション（ライブ・保存済みの両方）を状態・作業ディレクトリ・最新のラウンジメモとともに一覧表示。`GET /api/threads/{thread_id}/messages` で他スレッドの会話を読める。読み取り専用なので、編集する前に見に行ける — ラウンジに一度も投稿していないセッションも対象
@@ -413,7 +517,7 @@ ccdb がバックエンド情報を記録する前に作成されたレコード
 - **スレッド検索** — `/search <query>` でキーワードから過去のスレッドを検索。スレッドごとに永続保存されたサマリー（最初のプロンプト）と作業ディレクトリにマッチし、ヒットを一覧しやすい embed で表示。アーカイブされて（サイドバーから消えた）スレッドもワンクリックで開き直せる Discord ディープリンク付き。任意の `origin` フィルタ（Discord / CLI）に対応。`body:True` を付けるとローカルの Claude トランスクリプト（`~/.claude/projects`）全体も grep し、会話の途中にしか出てこないキーワードも見つけられる — body ヒットには一致したスニペットが `💬` バッジ付きで表示され、Discord スレッドのないトランスクリプトはリンクの代わりに `claude --resume <id>` のヒントを表示。同じ検索を `GET /api/search`（`body=1` を付ける）として他セッション・スキルにも公開。AI トークン不要 — ccdb が既に保持しているデータへの `LIKE` クエリと、ディスク上のトランスクリプトへの安全な `grep`（`shell=True` は不使用）のみ
 - **セッションリジューム** — `/resume` で直近のセッション一覧（最大 25 件）をセレクトメニューで表示し、選択したセッションを新スレッドで再開。オプションの `query` パラメータでキーワード検索（サマリーと作業ディレクトリにマッチ）、`filter=orphaned` で削除済みスレッドのセッションのみ表示。任意のチャンネルやスレッドから実行可能 — 常に設定されたメインチャンネルに新スレッドを作成
 - **リジューム情報** — 現在のセッションをターミナルで継続する CLI コマンドを表示（`/resume-info`、スレッド内限定）
-- **セッションクリア** — `/clear` で現在のスレッドの Claude Code セッションをリセットし、新スレッドを作成せずにゼロから再開
+- **セッションクリア** — `/clear` で現在の会話（スレッドまたはインライン返信チャンネル）の Claude Code セッションをリセットし、新スレッドを作成せずにゼロから再開
 - **スタートアップリジューム** — 任意のBot 再起動後に中断セッションを自動再開。`AutoUpgradeCog`（アップグレード再起動）および `ClaudeChatCog.cog_unload()`（その他すべてのシャットダウン）が自動登録、または `POST /api/mark-resume` で手動登録
 - **プログラム的スポーン** — `POST /api/spawn` でスクリプトや Claude サブプロセスから新しい Discord スレッド + Claude セッションを作成。スレッド作成後すぐに非ブロッキング 201 を返す
 - **スレッド ID 注入** — すべての Claude サブプロセスに `DISCORD_THREAD_ID` 環境変数を渡し、セッションから `$CCDB_API_URL/api/spawn` で子セッションを起動可能
@@ -433,6 +537,11 @@ ccdb がバックエンド情報を記録する前に作成されたレコード
 - **シークレット分離** — Bot トークンを subprocess 環境から除去
 - **ユーザー認証** — `allowed_user_ids` で Claude を呼び出せるユーザーを制限
 - **ログインジェクション防止** — API 経由のユーザー入力値はログ書き込み前に無害化（改行文字除去）
+- **認証情報ファイルを追跡しない** — `.gitignore` は `.env` だけでなく `.env.*` も対象にする。運用者は実ファイルの隣に日付付きバックアップ（`.env.bak-…`）を残しがちで、その 1 つ 1 つが有効な Bot トークンを保持しているため。テンプレートを追跡し続けられるよう `.env.example` だけは明示的に再包含している
+- **ローカルモデルバックエンド**（オプション）— `/backend local` で自身のハードウェア上のモデルに対してスレッドを実行。通常は「local」実行でもベンダーへ接続するため、ccdb は update check と analytics を無効にした専用 CLI home を管理し、その設定がなければ起動を拒否します — [docs/local-backend.md](../local-backend.md)参照。`/ollama` で Discord からそのランタイムを管理でき、実行されるモデルはそこで選択したものだけです — 黙って食い違う環境変数は存在しません
+- **リモート AG-UI バックエンド**（オプション）— `/backend agui` で既存の Discord/Teams セッション機構を任意の HTTP/SSE AG-UI エージェントへ接続し、ccdb の session ledger、rendering、cancellation、運用制御を維持します — [docs/agui-backend.md](../agui-backend.md)参照
+- **`/ask` — 明示的なエスカレーション**（オプション）— 匿名化済みかつ単体で完結する質問を 1 件だけ、プロジェクトの文脈もファイルもツールも与えずに強力な外部モデルへ送り、回答内で実名を復元します。ツールは deny list ではなく空の *allow* list（`--tools ""`）で制御します — deny list は CLI がツールを追加するたびに書き換えが必要になるためです。分離は spawn のたびに検証されます。送信前にはローカルのジャッジが、置換によって質問の主題そのものが隠されていないかを確認します —「`org-002` の良い点と悪い点」は完璧に匿名化されている一方で回答不能です — 該当する場合は送信を保留します（`force: true` で上書き可能）— [docs/escalation.md](../escalation.md)参照
+- **匿名化ゲートウェイ**（オプション）— プロンプトが Claude または Codex へ届く前に組織を識別する語を安定した alias へ置換し、回答内で復元。ローカルモデルが置換漏れを確認し、デフォルトでは漏れを検出すると送信をブロックします。`CCDB_ANONYMIZE_POLICY=adopt` を指定すると、報告された語に対して alias を対応表へ発行したうえで送信するため、新しい顧客名が出てくるたびに誰かが手で rules file を編集するまでコマンドが止まる、という事態を避けられます。rules file を作成するまでは無効です — [docs/anonymization.md](../anonymization.md)参照
 
 ---
 
@@ -440,11 +549,11 @@ ccdb がバックエンド情報を記録する前に作成されたレコード
 
 **前提条件:**
 
-- Python 3.10+
+- Python 3.12+
 - 以下のうち少なくとも 1 つ:
   - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — インストールと認証（`claude login`）。Anthropic Pro/Max サブスクライバーに推奨。
   - [OpenAI Codex CLI](https://github.com/openai/codex) — `npm install -g @openai/codex` の後 `codex login`。既存の ChatGPT Plus/Pro/Business サブスクリプションを使用。
-- 両方インストールも可能。実行時に `/backend` でいつでも切り替えられます（[バックエンド切り替え](#バックエンド切り替え--claude--codex-をオンデマンドで) 参照）。
+- 両方インストールも可能。実行時に `/backend` でいつでも切り替えられます（[バックエンド切り替え](#バックエンド切り替え--claude--codex--ag-ui-をオンデマンドで) 参照）。
 
 **対応プラットフォーム:** 主に **Linux** で開発・テストされています。macOS と Windows はサポートされ CI は通過しますが、実環境でのテストは限定的 — バグ報告歓迎。
 
@@ -462,11 +571,11 @@ ccdb がバックエンド情報を記録する前に作成されたレコード
 
 ```bash
 # uvx を使う場合（インストール不要）:
-uvx --from "git+https://github.com/ebibibi/claude-code-discord-bridge.git" ccdb setup
+uvx --from "git+https://github.com/ebibibi/ebi-agent-chat-relay.git" ccdb setup
 
 # または、クローン後:
-git clone https://github.com/ebibibi/claude-code-discord-bridge.git
-cd claude-code-discord-bridge
+git clone https://github.com/ebibibi/ebi-agent-chat-relay.git
+cd ebi-agent-chat-relay
 uv run ccdb setup
 ```
 
@@ -602,6 +711,8 @@ async def setup(bot, runner, components):
 | `AutoUpgradeCog` | Webhook トリガーによるパッケージ自動アップグレード |
 | `DocsSyncCog` | プッシュ時の自動ドキュメント同期 |
 | `AlertResponderCog` | 汎用アラート監視 — 監視システムからのアラートを Discord に転送し、Claude Code による調査セッションをトリガー |
+| `JobFailureTriageCog` | Webhook の embed として投稿されたスケジューラージョブの失敗を自動でトリアージ |
+| `ThreadCompletionCog` | 「スレッドを削除した」＝「その作業が完了した」とみなす — 削除をまとめて、残っている transcript から作業記録を書き起こす。`/thread-completion on` を実行するまでは無効 |
 
 ---
 
@@ -610,7 +721,7 @@ async def setup(bot, runner, components):
 すでに discord.py Bot を動かしている場合は、ccdb をパッケージとして追加します:
 
 ```bash
-uv add git+https://github.com/ebibibi/claude-code-discord-bridge.git
+uv add git+https://github.com/ebibibi/ebi-agent-chat-relay.git
 ```
 
 `bot.py` を作成します:
@@ -742,7 +853,7 @@ await setup_bridge(
 INLINE_REPLY_CHANNEL_IDS=333,444
 ```
 
-インライン返信モードでは、Claude の返信は新しいスレッドではなくチャンネル内のメッセージとして直接送信されます。セッションは内部で追跡されているため、その後のメッセージも同じ Claude セッションとして継続します。
+インライン返信モードでは、Claude の返信は新しいスレッドではなくチャンネル内のメッセージとして直接送信されます。チャンネル自体が 1 つの継続した会話となります。セッションは内部で追跡されるため、その後のメッセージも `/clear` でリセットするまで同じ Claude セッションを再開します。
 
 #### チャットのみチャンネル
 
@@ -770,17 +881,21 @@ CHAT_ONLY_CHANNEL_IDS=444,555
 
 ## 設定
 
+アイドルデッドライン、添付ファイルの再送、認証情報、起動時ロールバックについては [ランタイム復旧とコントロールプレーンの境界](../runtime-reliability.md) を参照してください。
+
 | 変数名 | 説明 | デフォルト |
 |--------|------|-----------|
 | `DISCORD_BOT_TOKEN` | Discord Bot トークン | （必須） |
 | `DISCORD_CHANNEL_ID` | Claude チャット用チャンネル ID | （必須） |
-| `CCDB_BACKEND` | 使用する CLI バックエンド: `claude`（Claude Code CLI）または `codex`（OpenAI Codex CLI） | `claude` |
+| `CCDB_BACKEND` | 使用するバックエンド: `claude`、`codex`、`local`、または `agui` | `claude` |
 | `CCDB_COMMAND` | CLI バイナリのパスまたは名前（`CLAUDE_COMMAND` より優先）。`CCDB_BACKEND` で選択された初期ランナーに使用され、実行時に `/backend` で切り替えた際は以下の 2 つのバックエンド別変数が優先されます。 | _（自動: `claude` or `codex`）_ |
 | `CCDB_CLAUDE_COMMAND` | Claude CLI バイナリの明示的なパス。`/backend claude` がアクティブなとき `BackendFactory` が使用（`CCDB_BACKEND` の初期値に依存しない）。`CLAUDE_COMMAND`、次に `claude`（PATH）へのフォールバックあり。 | （オプション） |
 | `CCDB_CODEX_COMMAND` | OpenAI Codex CLI バイナリの明示的なパス。systemd 下で Bot を実行する場合に必須（デフォルトのサービス PATH に `~/.npm-global/bin` が含まれない）。`codex`（PATH）へのフォールバックあり。 | （オプション） |
+| `CCDB_AGUI_URL` | `/backend agui` で使用する正確な HTTP(S) run endpoint。redirect は拒否されます。 | （`agui` では必須） |
+| `CCDB_AGUI_TOKEN` | AG-UI endpoint 用の任意の bearer token。Claude/Codex subprocess の環境から除去されます。 | （オプション） |
 | `PATH` | Bot **と Bot が起動する全 CLI セッション**のバイナリ検索パス（セッションは Bot の環境を継承）。systemd はユニットを最小限の PATH で起動し `~/.bashrc` / `~/.profile` を読まないため、systemd 運用時は `.env` に設定する。[ツールチェーンの PATH](#ツールチェーンの-path--env-に設定する) 参照 | （親プロセスから継承） |
 | `CCDB_MODEL` | 使用するモデル（`CLAUDE_MODEL` より優先） | `sonnet` |
-| `CCDB_MODEL_DISCOVERY` | `0` にすると、`/model` のオートコンプリートが Anthropic のモデル一覧エンドポイントへ「この認証情報から見えるモデル」を問い合わせるのをやめ、常に静的な候補リストを使用する。この問い合わせは読み取り専用で、Claude Code CLI 自身の認証情報を再利用し、オフライン時・未認証時・Bedrock/Vertex/Foundry 利用時には自動的にフォールバックする | `1` |
+| `CCDB_MODEL_DISCOVERY` | `0` にすると、`/model` のオートコンプリートが Anthropic のモデル一覧エンドポイントへ「この認証情報から見えるモデル」を問い合わせるのをやめ（あわせて Codex CLI のローカルモデルカタログの読み取りもやめ）、常に静的な候補リストを使用する。この問い合わせは読み取り専用で、Claude Code CLI 自身の認証情報を再利用し、オフライン時・未認証時・Bedrock/Vertex/Foundry 利用時には自動的にフォールバックする | `1` |
 | `CCDB_PERMISSION_MODE` | CLI のパーミッションモード（`CLAUDE_PERMISSION_MODE` より優先） | `acceptEdits` |
 | `CCDB_DANGEROUSLY_SKIP_PERMISSIONS` | 全パーミッションチェックをスキップ（`CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS` より優先） | `false` |
 | `CCDB_WORKING_DIR` | CLI の作業ディレクトリ（`CLAUDE_WORKING_DIR` より優先） | カレントディレクトリ |
@@ -792,7 +907,8 @@ CHAT_ONLY_CHANNEL_IDS=444,555
 | `CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS` | 全パーミッションチェックをスキップ（旧名 — `CCDB_DANGEROUSLY_SKIP_PERMISSIONS` を推奨） | `false` |
 | `CLAUDE_WORKING_DIR` | Claude の作業ディレクトリ（旧名 — `CCDB_WORKING_DIR` を推奨） | カレントディレクトリ |
 | `MAX_CONCURRENT_SESSIONS` | 最大並行 Claude CLI セッション数（チャット・スキル・スケジューラ・Webhook の全パスに適用） | `3` |
-| `SESSION_TIMEOUT_SECONDS` | セッション非アクティブタイムアウト | `300` |
+| `SESSION_TIMEOUT_SECONDS` | セッションの**アイドル**タイムアウト（秒）。出力が届くたびにリセットされるため、アクティブなストリームはこの値を超えて継続しうる。`0` でデッドラインを明示的に無効化 | `300` |
+| `CCDB_PR_COMPLETION_OWNER` | 指定したGitHub所有者の非Draft `session/<thread_id>` PRが残っている場合、同じAIを1回だけ自動継続して完了または具体的なブロッカー報告まで進める。認証済み`gh`が必要。 | （オプション） |
 | `DISCORD_OWNER_ID` | Claude が入力待ちのとき @mention する Discord ユーザー ID | （オプション） |
 | `COORDINATION_CHANNEL_ID` | AI Lounge チャンネルのデフォルトフォールバック用チャンネル ID | （オプション） |
 | `CCDB_MENTION_ANYWHERE` | true のとき、ギルド内のどのチャンネル・スレッドでも @メンションで Claude を呼び出せる。`false` にすると設定されたチャンネルのみを監視 | `true` |
@@ -800,7 +916,7 @@ CHAT_ONLY_CHANNEL_IDS=444,555
 | `MENTION_ONLY_CHANNEL_IDS` | メンション不要チャンネルの集合から除外するチャンネル ID（カンマ区切り。レガシー — 現在はチャンネルをリストに載せないだけで同じ効果が得られる） | （オプション） |
 | `INLINE_REPLY_CHANNEL_IDS` | インライン返信チャンネル ID（カンマ区切り、スレッドを作成しない） | （オプション） |
 | `CHAT_ONLY_CHANNEL_IDS` | チャットのみモードのチャンネル ID（カンマ区切り）— Claude のテキスト応答のみ表示。ツール embed・思考・セッション情報・Todo はすべて非表示 | （オプション） |
-| `WORKTREE_BASE_DIR` | セッション Worktree のスキャン対象ディレクトリ（自動クリーンアップを有効化） | （オプション） |
+| `WORKTREE_BASE_DIR` | リポジトリ群の親ディレクトリ。セッション Worktree のスキャン対象になる。設定を強く推奨: セッションには必ず `wt-{thread_id}` の作成が指示されるため、未設定だと誰も削除しない | （オプション） |
 | `CLI_SESSIONS_PATH` | CLI セッション検出用のパス（`~/.claude/projects`）。`/sync-sessions` の有効化と、トランスクリプトの本文検索（`/search body:True`、`GET /api/search?body=1`）に使用。デフォルトは標準の `~/.claude/projects` なので、Claude Code を実行した環境ならゼロコンフィグで本文検索が使える | （オプション） |
 | `CUSTOM_COGS_DIR` | 起動時に読み込むカスタム Cog ファイルを含むディレクトリ（[カスタム Cog](#カスタム-cogフォーク不要で機能拡張) 参照） | （オプション） |
 | `CLAUDE_ALLOWED_TOOLS` | Claude CLI に許可するツールのカンマ区切りリスト（旧名 — `CCDB_ALLOWED_TOOLS` を推奨） | （オプション） |
@@ -811,8 +927,11 @@ CHAT_ONLY_CHANNEL_IDS=444,555
 | `CCDB_LOG_FILE` | ログファイルのパス。設定するとデフォルトの stdout ハンドラに加えてローテーティングファイルハンドラ（10 MB × 5 バックアップ）が追加される。監視・アラートに便利 | （オプション） |
 | `API_HOST` | REST API バインドアドレス | `127.0.0.1` |
 | `API_PORT` | REST API ポート（設定すると REST API が有効になる） | （オプション） |
+| `CCDB_API_SECRET` | コントロールプレーン用のオプションの Bearer シークレット。セッションランナーにも同じ値が渡される。ループバック以外にバインドする場合は必須 | （オプション） |
+| `CCDB_CONTROL_PLANE_HOST_GUARD` | コントロールプレーンでローカル以外の Host / Origin と転送ヘッダを拒否する。認証済みプロキシを意図的に使う場合は `0` で無効化 | `1` |
 | `CCDB_INGEST_TOKEN` | `POST /api/ingest` 用の Bearer トークン（`api_secret` とは独立）。未設定ならこのエンドポイントは `503` を返す | （オプション） |
 | `CCDB_INGEST_REQUIRE_COMPLETE` | `1` を設定すると、`attachments_manifest` によって添付ファイルの欠落が判明したインジェストを、部分的な証拠でセッションを開始せずに `409` で拒否する | `0` |
+| `CCDB_TEAMS_VAULT_ROOT` | `POST /api/teams/sync` が上流スレッドをミラーリングする先のディレクトリ（メッセージ 1 件につき 1 ファイル）。`CCDB_INGEST_TOKEN` で保護される | `{working_dir}/teams` |
 
 ### パーミッションモード — `-p` モードで動作するもの
 
@@ -1023,7 +1142,7 @@ class MyCog(commands.Cog):
 通知とタスク管理のためのオプション REST API。aiohttp が必要:
 
 ```bash
-uv add "claude-code-discord-bridge[api]"
+uv sync --extra api
 ```
 
 ### エンドポイント
@@ -1039,15 +1158,17 @@ uv add "claude-code-discord-bridge[api]"
 | GET | `/api/tasks` | 登録済みタスクの一覧 |
 | DELETE | `/api/tasks/{id}` | タスクの削除 |
 | PATCH | `/api/tasks/{id}` | タスクの更新（有効/無効、スケジュール変更） |
-| POST | `/api/spawn` | 新しい Discord スレッドを作成し Claude Code セッションを起動（非ブロッキング）。`auto_start: false` を指定するとユーザーの最初の返信まで Claude の起動を延期できる |
+| POST | `/api/spawn` | 新しい Discord スレッドを作成し Claude Code セッションを起動（非ブロッキング）。`auto_start: false` を指定するとユーザーの最初の返信まで Claude の起動を延期でき、`user_id` を指定するとリクエスト元をスレッドに追加できる |
 | POST | `/api/ingest` | 認証済み外部スポーン（ブラウザ拡張機能 / webhook）。base64 添付ファイル対応。結果取得が設定されている場合 `result_id` を返す |
 | GET | `/api/ingest/{result_id}` | スポーンされたセッションの最終返信をポーリング（`status`/`result`/`error`/`thread_id`） |
 | GET | `/api/ingest/summary` | 長時間続くインジェストスレッドの継続サマリー + `marker` を `key` で読み取り（ingest-token 認証）。クライアントは差分だけをエクスポートできる |
 | POST | `/api/ingest/summary` | セッションから更新版の継続サマリー（`result_id` + `summary`）を保存 — localhost コントロールプレーン。ccdb が `marker` をインジェスト行から前進させる |
 | DELETE | `/api/ingest/summary` | `key` の保存済みサマリーをクリアし、次回インジェストで完全な再サマリーを強制 |
+| POST | `/api/teams/sync/plan` | 上流スレッドのミラーに何が足りないかを問い合わせる — ID + ハッシュを送ると `want_messages`/`want_attachments`/`newest_have_mid` が返る（ingest-token 認証） |
+| POST | `/api/teams/sync/push` | plan が要求したメッセージを Vault 配下に 1 件 1 ファイルで保存。添付ファイルと追記専用の `chain.jsonl` を伴う |
 | POST | `/api/mark-resume` | 次回 Bot 起動時のスレッド自動リジュームを登録 |
 | GET | `/api/lounge` | AI Lounge の最近のメッセージを取得 |
-| POST | `/api/lounge` | AI Lounge にメッセージを投稿（`label` オプション） |
+| POST | `/api/lounge` | AI Lounge にメッセージを投稿（`label` オプション）。200 文字を超えると `hint` フィールドを返す |
 | GET | `/api/sessions` | すべてのセッション（ライブ・保存済み）を状態・作業ディレクトリ・最新のラウンジメモ付きで一覧（`state=running`、`exclude_thread`、`limit`） |
 | GET | `/api/search` | キーワードから過去のスレッドを検索 — サマリーと作業ディレクトリへの `LIKE` クエリ。`body=1` を付けるとローカルの Claude トランスクリプトも grep（各ヒットに `snippet` と `source` が付く）。各ヒットを Discord `deep_link` 付きで返す（`q` 必須、任意の `origin`、`limit` は最大 50） |
 | GET | `/api/threads/{thread_id}/messages` | 他スレッドの会話を古い順に取得（`limit`） |
@@ -1092,6 +1213,50 @@ curl -X POST http://localhost:8080/api/tasks \
 
 ---
 
+## Microsoft Teams
+
+Teams は port ではなく、本番対応の**兄弟フロントエンド**です。`claude_discord` と
+`claude_teams` はそれぞれ `claude_code_core.frontend` の共通語彙を実装し、互いを
+import しません。両方に同じ conformance contract を実行することで、「Teams 側に機能が
+足りない」という問題を利用者が何か月も後になって発見する事態を防ぎます。
+
+```bash
+uv sync --extra teams
+python -m claude_teams manifest --out dist/teams-app.zip
+```
+
+通常の launcher は、`CCDB_FRONTENDS=discord,teams` の設定により Discord と Teams を同時に
+実行します。公開レシーバーが Bot Framework token を検証して activity を queue へ追加し、private 側の
+`ActivityPuller` が outbound 接続で取得します。その後、Discord と同じ session runner へ各 prompt を
+送り、結果を Teams へ投稿します。session host に Teams 向けの inbound listener は不要です。
+
+Teams の体験は Discord をそのまま移植したものではありません。Discord では 15 件に分割される回答も
+**1 件**で届き、縦に並ぶ embed は更新される 1 枚の session card になります。ccdb が使用する card は
+Teams の 28 KB 制限以内に収まるよう構成されています。
+
+`AskUserQuestion` と permission prompt は、button または form を備えた card として同じ会話に
+表示されます。prompt の回答権限は runner と同じ owner policy に従い、thread/conversation の addressing
+情報は各 turn で永続化されます。回答のない permission request は拒否され、card を投稿できなかった
+場合も同様です。誰にも見えなかった prompt を、誰も回答しなかった prompt より安全なものとして
+扱うことはありません。
+
+Teams surface は、1 回限りの upload URL を使った personal chat の file consent に対応します。byte を
+送る前に、URL の host が Microsoft 自身の domain であることを確認します。channel への file delivery は
+未対応で、private queue relay も file-consent invoke をまだ bridge しません。この surface-level の差に
+より、conformance contract は 2 回実行されます。personal chat は 18 項目すべてに合格し、channel は
+該当する 1 項目だけ不合格になることを test で確認しています。
+
+Discord と異なり、Teams には**公開 HTTPS endpoint**、Entra application、Azure Bot、install 可能な
+Teams app package、および公開側と private 側を結ぶ queue が必要です。値は tenant 固有なので、安全かつ
+正確な万能 manifest をリポジトリへ check in することはできません。
+
+登録から最初の Teams → agent → Teams round trip までは、
+[Teamsセットアップガイド](../teams-setup.md)に沿って進めてください。機能の詳細は
+[Teams surface の動作](../teams.md)、trust boundary と実測運用は
+[relay のセキュリティモデル](../teams-relay.md)を参照してください。
+
+---
+
 ## アーキテクチャ
 
 ```
@@ -1104,7 +1269,8 @@ claude_code_core/          # バックエンド非依存のコアライブラリ
   models.py                # SQLite スキーマ
   session_repo.py          # セッション CRUD
   thread_search.py         # /search のオーケストレーション — サマリー + 本文をマージしスレッド単位で重複排除
-  transcript_search.py     # ~/.claude/projects トランスクリプトの grep/スキャン + スニペット抽出
+  transcript_search.py     # ~/.claude/projects トランスクリプトの grep/スキャン + スニペット抽出。
+                           # find_transcript() は作業ディレクトリを知らなくても単一セッションのファイルを特定する
   lounge_repo.py           # AI Lounge メッセージ CRUD
   rewind.py                # セッションリワインドヘルパー
 claude_discord/
@@ -1114,6 +1280,8 @@ claude_discord/
   cog_loader.py            # 動的カスタム Cog ローダー（CUSTOM_COGS_DIR）
   bot.py                   # Discord Bot クラス
   protocols.py             # 共有プロトコル（DrainAware）
+  frontend.py              # DiscordFrontend — resolve/create a conversation by key
+  stores.py                # build_session_stores() — every repo, no frontend
   concurrency.py           # Worktree 指示 + アクティブセッションレジストリ
   collision.py             # ファイル書き込み追跡 + 衝突判定ルール（純粋関数・時刻注入）
   lounge.py                # AI Lounge プロンプトビルダー
@@ -1148,12 +1316,14 @@ claude_discord/
     claims_repo.py         # アドバイザリなリソースクレーム CRUD（TTL 付き）
     resume_repo.py         # スタートアップリジューム CRUD（Bot 再起動をまたいだ保留リジューム）
     settings_repo.py       # ギルドごとの設定
+    frontend_thread_repo.py  # ThreadKey → 会話の実際の場所
     inbox_repo.py          # スレッドインボックス CRUD（THREAD_INBOX_ENABLED）
   discord_ui/
     status.py              # 絵文字リアクションステータスマネージャー（デバウンス付き）
     chunker.py             # フェンス・テーブル対応メッセージ分割
     embeds.py              # Discord embed ビルダー
     views.py               # 停止ボタンと共有 UI コンポーネント
+    prompt_views.py        # ChoiceView / FormModal — renders the protocol's prompts
     mentions.py            # user_mention_kwargs() — Claude が入力待ちのときリクエスターに通知
     ask_bus.py             # AskUserQuestion 通信用イベントバス
     ask_view.py            # AskUserQuestion 用 Discord ボタン / Select Menu
@@ -1161,15 +1331,14 @@ claude_discord/
     streaming_manager.py   # StreamingMessageManager — デバウンス付きインプレース編集
     tool_timer.py          # LiveToolTimer — 長時間ツール実行の経過時間カウンター
     thread_dashboard.py    # スレッドのセッション状態を表示する live ピン embed
-    plan_view.py           # Plan Mode 承認ボタン（Approve/Cancel）
-    permission_view.py     # ツール実行許可ボタン（Allow/Deny）
-    elicitation_view.py    # MCP Elicitation 用 Discord UI（Modal フォームまたは URL ボタン）
     file_sender.py         # .ccdb-attachments 経由のファイル配信
     inbox_classifier.py    # classify() — セッションにラベルを付ける軽量 claude -p 呼び出し
     thread_renamer.py      # suggest_title() — スレッド自動リネーム用バックグラウンド claude -p 呼び出し
   ext/
     api_server.py          # REST API サーバー（オプション、aiohttp が必要）
     ingest_manifest.py     # attachments_manifest と実際に届いたファイルの突合
+    teams_sync.py          # /api/teams/sync（plan + push）の have/want ネゴシエーション
+    teams_store.py         # TeamsVaultStore — 1 メッセージ 1 ファイル、chain.jsonl、_history/
   utils/
     logger.py              # ロギング設定
 examples/
@@ -1226,6 +1395,8 @@ uv run pytest tests/ -v --cov=claude_discord
 - **AutoUpgradeCog** — GitHub webhook + systemctl restart による自己更新
 - **DocsSyncCog** — push 時の Webhook 経由でドキュメントを自動翻訳
 - **AlertResponderCog** — 汎用アラート監視 Cog。設定可能なソースを監視し、重要度付き通知を Discord に投稿
+- **JobFailureTriageCog** — スケジューラージョブの失敗 embed を拾ってトリアージセッションを開始
+- **ThreadCompletionCog** — スレッドの削除は作業完了の合図。削除をまとめて 1 件の作業記録にする。スレッドのメッセージはすでに消えているため、記録はセッションの transcript から組み立てる。何をどこに記録するかは Cog ではなく外部のプロンプトファイル（`THREAD_COMPLETION_PROMPT_FILE`）が決める。記録は `/thread-completion on` を実行するまで無効 — 環境変数はスイッチを「用意する」だけで、入れるかどうかは決めない
 
 実行方法: `ccdb start --cogs-dir examples/ebibot/cogs/`
 

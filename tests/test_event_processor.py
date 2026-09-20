@@ -11,11 +11,13 @@ run_claude_with_config() pipeline.
 from __future__ import annotations
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
 import pytest
 
+from claude_code_core.frontend import ActivitySpec
 from claude_discord.claude.types import (
     AskOption,
     AskQuestion,
@@ -25,13 +27,48 @@ from claude_discord.claude.types import (
     ToolCategory,
     ToolUseEvent,
 )
-from claude_discord.cogs.event_processor import EventProcessor
+from claude_discord.cogs.event_processor import EventProcessor, _backend_name_from_runner
 from claude_discord.cogs.run_config import RunConfig
+from claude_discord.discord_ui.prompt_views import ChoiceView
+from claude_discord.surface import DiscordActivity, FormLauncher
 
 
 def _make_config(thread: MagicMock, runner: MagicMock, **kwargs) -> RunConfig:
     """Build a minimal RunConfig for tests."""
     return RunConfig(thread=thread, runner=runner, prompt="test prompt", **kwargs)
+
+
+async def _wait_for_prompt_message(thread: MagicMock, timeout: float = 2.0) -> None:
+    """Let a background prompt task get as far as posting its message.
+
+    Approval prompts are dispatched off the event loop so a two-minute wait for
+    a human cannot stall event processing. The posting itself still happens
+    promptly, so a bounded poll is enough — and fails loudly rather than
+    hanging if the task never runs at all.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        # Match the prompt's own view, not merely "a message with a view":
+        # a session posts assistant text and a stop button first, and either
+        # would otherwise satisfy the wait before the prompt has gone out.
+        if any(
+            isinstance(call.kwargs.get("view"), ChoiceView | FormLauncher)
+            for call in thread.send.call_args_list
+        ):
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("the prompt task never posted a message")
+
+
+def _posted_mentions(thread: MagicMock) -> list[str]:
+    """Every mention string the thread was asked to post.
+
+    Checked across all calls rather than the last one: a prompt is posted from
+    its own task, so it no longer has to be the most recent thing sent.
+    """
+    return [
+        call.kwargs["content"] for call in thread.send.call_args_list if call.kwargs.get("content")
+    ]
 
 
 def _make_tool_event(tool_id: str = "t1") -> StreamEvent:
@@ -54,6 +91,11 @@ def _make_result_event(**kwargs) -> StreamEvent:
         duration_ms=500,
         **kwargs,
     )
+
+
+def test_backend_name_does_not_unwrap_arbitrary_mock_attributes() -> None:
+    """Only real backend wrappers should have their ``inner`` traversed."""
+    assert _backend_name_from_runner(MagicMock()) == "claude"
 
 
 class TestEventProcessorProperties:
@@ -112,8 +154,26 @@ class TestOnSystem:
         await p.process(StreamEvent(message_type=MessageType.SYSTEM, session_id="s1"))
 
         repo.save.assert_called_once_with(
-            thread.id, "s1", working_dir=runner.working_dir, summary="test prompt", backend="claude"
+            thread.id,
+            "s1",
+            working_dir=runner.working_dir,
+            origin="discord",
+            summary="test prompt",
+            backend="claude",
         )
+
+    @pytest.mark.asyncio
+    async def test_saves_the_frontend_origin_for_a_teams_session(
+        self, thread: MagicMock, runner: MagicMock
+    ) -> None:
+        repo = MagicMock()
+        repo.save = AsyncMock()
+        config = _make_config(thread, runner, repo=repo, session_origin="teams")
+        p = EventProcessor(config)
+
+        await p.process(StreamEvent(message_type=MessageType.SYSTEM, session_id="s1"))
+
+        assert repo.save.call_args.kwargs["origin"] == "teams"
 
     @pytest.mark.asyncio
     async def test_saves_to_repo_without_summary_for_resumed_session(
@@ -128,7 +188,11 @@ class TestOnSystem:
         await p.process(StreamEvent(message_type=MessageType.SYSTEM, session_id="existing-sess"))
 
         repo.save.assert_called_once_with(
-            thread.id, "existing-sess", working_dir=runner.working_dir, backend="claude"
+            thread.id,
+            "existing-sess",
+            working_dir=runner.working_dir,
+            origin="discord",
+            backend="claude",
         )
 
     @pytest.mark.asyncio
@@ -145,7 +209,12 @@ class TestOnSystem:
         await p.process(StreamEvent(message_type=MessageType.SYSTEM, session_id="s1"))
 
         repo.save.assert_called_once_with(
-            thread.id, "s1", working_dir=runner.working_dir, summary="x" * 100, backend="claude"
+            thread.id,
+            "s1",
+            working_dir=runner.working_dir,
+            origin="discord",
+            summary="x" * 100,
+            backend="claude",
         )
 
     @pytest.mark.asyncio
@@ -290,32 +359,29 @@ class TestOnToolUse:
 
         await p.process(_make_tool_event("t-timer"))
 
-        assert "t-timer" in p._state.active_timers
-        # Clean up the timer task
-        task = p._state.active_timers["t-timer"]
-        task.cancel()
-        with pytest.raises((asyncio.CancelledError, Exception)):
-            await task
+        activity = p._state.active_tools["t-timer"]
+        assert isinstance(activity, DiscordActivity)
+        assert activity._timer is not None
+        await p.finalize()
 
 
 class TestOnToolResult:
     """USER (tool result) event handling."""
 
     @pytest.mark.asyncio
-    async def test_timer_cancelled_on_result(self, thread: MagicMock, runner: MagicMock) -> None:
+    async def test_activity_completed_on_result(self, thread: MagicMock, runner: MagicMock) -> None:
         config = _make_config(thread, runner)
         p = EventProcessor(config)
 
-        # Plant a fake timer task
-        fake_task = MagicMock(spec=asyncio.Task)
-        fake_task.done.return_value = False
-        p._state.active_timers["t1"] = fake_task
+        activity = MagicMock()
+        activity.complete = AsyncMock()
+        p._state.active_tools["t1"] = activity
 
         result_event = StreamEvent(message_type=MessageType.USER, tool_result_id="t1")
         await p.process(result_event)
 
-        fake_task.cancel.assert_called_once()
-        assert "t1" not in p._state.active_timers
+        activity.complete.assert_awaited_once_with("")
+        assert "t1" not in p._state.active_tools
 
     @pytest.mark.asyncio
     async def test_tool_embed_updated_with_result(
@@ -330,7 +396,9 @@ class TestOnToolResult:
         fake_msg = MagicMock(spec=discord.Message)
         fake_msg.embeds = [fake_embed]
         fake_msg.edit = AsyncMock()
-        p._state.active_tools["t1"] = fake_msg
+        p._state.active_tools["t1"] = DiscordActivity(
+            fake_msg, ActivitySpec(kind="tool", title="Running: echo hi")
+        )
 
         result_event = StreamEvent(
             message_type=MessageType.USER,
@@ -351,7 +419,9 @@ class TestToolResultCollapse:
         fake_msg = MagicMock(spec=discord.Message)
         fake_msg.embeds = [fake_embed]
         fake_msg.edit = AsyncMock()
-        p._state.active_tools[tool_id] = fake_msg
+        p._state.active_tools[tool_id] = DiscordActivity(
+            fake_msg, ActivitySpec(kind="tool", title="Running: cat file")
+        )
         return fake_msg
 
     def _make_result_event(self, tool_id: str, content: str | None) -> StreamEvent:
@@ -615,7 +685,9 @@ class TestConnectionErrorResilience:
         fake_msg = MagicMock(spec=discord.Message)
         fake_msg.embeds = [fake_embed]
         fake_msg.edit = AsyncMock(side_effect=Exception("Server disconnected"))
-        p._state.active_tools["t1"] = fake_msg
+        p._state.active_tools["t1"] = DiscordActivity(
+            fake_msg, ActivitySpec(kind="tool", title="Running: echo hi")
+        )
 
         result_event = StreamEvent(
             message_type=MessageType.USER,
@@ -685,8 +757,8 @@ class TestCompactHandling:
 
         status.set_compact.assert_awaited_once()
         # Check that a message was sent to the thread
-        calls = [str(c) for c in thread.send.call_args_list]
-        assert any("compact" in c.lower() or "\U0001f5dc" in c for c in calls)
+        embeds = [c.kwargs["embed"] for c in thread.send.call_args_list if "embed" in c.kwargs]
+        assert any("compact" in (embed.description or "").lower() for embed in embeds)
 
     def test_compact_occurred_false_initially(self, thread: MagicMock, runner: MagicMock) -> None:
         config = _make_config(thread, runner)
@@ -752,13 +824,14 @@ class TestCompactHandling:
         runner = MagicMock()
         status = MagicMock()
         status._reset_stall_timer = MagicMock()
+        status.set_thinking = AsyncMock()
         config = _make_config(thread, runner, status=status)
         processor = EventProcessor(config)
 
         event = StreamEvent(message_type=MessageType.PROGRESS)
         await processor.process(event)
 
-        status._reset_stall_timer.assert_called_once()
+        status.set_thinking.assert_awaited_once()
 
 
 class TestTodoWrite:
@@ -798,14 +871,14 @@ class TestTodoWrite:
         await p.process(self._make_todo_event())
 
         # Replace the stored reference with a spy so we can assert on delete().
-        old_msg = MagicMock(spec=discord.Message)
-        old_msg.delete = AsyncMock()
-        p._state.todo_message = old_msg
+        old_activity = MagicMock()
+        old_activity.cancel = AsyncMock()
+        p._state.todo_message = old_activity
 
         # Second update
         await p.process(self._make_todo_event())
 
-        old_msg.delete.assert_called_once()
+        old_activity.cancel.assert_awaited_once()
         embed_sends = [c for c in thread.send.call_args_list if "embed" in c.kwargs]
         assert len(embed_sends) == 2  # initial post + repost
 
@@ -828,7 +901,7 @@ class TestTodoWrite:
     async def test_todo_message_none_after_send_failure(
         self, thread: MagicMock, runner: MagicMock
     ) -> None:
-        """If the repost send() fails, todo_message must be None (no stale reference)."""
+        """A frontend send failure leaves no stale todo activity."""
         thread.send.side_effect = Exception("Server disconnected")
         config = _make_config(thread, runner)
         p = EventProcessor(config)
@@ -858,13 +931,11 @@ class TestCcdbAttachmentsDelivery:
         config = _make_config(thread, runner)
         p = EventProcessor(config)
 
-        with patch(
-            "claude_discord.cogs.event_processor.send_files",
-            new_callable=AsyncMock,
-        ) as mock_send:
+        with patch.object(config.surface, "deliver_files", new_callable=AsyncMock) as mock_send:
             await p.process(_make_result_event(session_id="s1"))
 
-        mock_send.assert_called_once_with(thread, [str(f)], str(tmp_path))
+        files = mock_send.await_args.args[0]
+        assert [item.path for item in files] == [str(f)]
 
     @pytest.mark.asyncio
     async def test_marker_file_deleted_after_send(
@@ -881,7 +952,7 @@ class TestCcdbAttachmentsDelivery:
         config = _make_config(thread, runner)
         p = EventProcessor(config)
 
-        with patch("claude_discord.cogs.event_processor.send_files", new_callable=AsyncMock):
+        with patch.object(config.surface, "deliver_files", new_callable=AsyncMock):
             await p.process(_make_result_event(session_id="s1"))
 
         assert not marker.exists()
@@ -895,10 +966,7 @@ class TestCcdbAttachmentsDelivery:
         config = _make_config(thread, runner)
         p = EventProcessor(config)
 
-        with patch(
-            "claude_discord.cogs.event_processor.send_files",
-            new_callable=AsyncMock,
-        ) as mock_send:
+        with patch.object(config.surface, "deliver_files", new_callable=AsyncMock) as mock_send:
             await p.process(_make_result_event(session_id="s1"))
 
         mock_send.assert_not_called()
@@ -916,10 +984,7 @@ class TestCcdbAttachmentsDelivery:
         config = _make_config(thread, runner)
         p = EventProcessor(config)
 
-        with patch(
-            "claude_discord.cogs.event_processor.send_files",
-            new_callable=AsyncMock,
-        ) as mock_send:
+        with patch.object(config.surface, "deliver_files", new_callable=AsyncMock) as mock_send:
             await p.process(_make_result_event(error="Claude crashed"))
 
         mock_send.assert_not_called()
@@ -941,7 +1006,7 @@ class TestCcdbAttachmentsDelivery:
         p = EventProcessor(config)
 
         with (
-            patch("claude_discord.cogs.event_processor.send_files", new_callable=AsyncMock),
+            patch.object(config.surface, "deliver_files", new_callable=AsyncMock),
             caplog.at_level(logging.INFO, logger="claude_discord.cogs.event_processor"),
         ):
             await p.process(_make_result_event(session_id="s1"))
@@ -961,7 +1026,7 @@ class TestCcdbAttachmentsDelivery:
         p = EventProcessor(config)
 
         with (
-            patch("claude_discord.cogs.event_processor.send_files", new_callable=AsyncMock),
+            patch.object(config.surface, "deliver_files", new_callable=AsyncMock),
             caplog.at_level(logging.DEBUG, logger="claude_discord.cogs.event_processor"),
         ):
             await p.process(_make_result_event(session_id="s1"))
@@ -988,13 +1053,11 @@ class TestCcdbAttachmentsDelivery:
         config = _make_config(thread, runner)
         p = EventProcessor(config)
 
-        with patch(
-            "claude_discord.cogs.event_processor.send_files",
-            new_callable=AsyncMock,
-        ) as mock_send:
+        with patch.object(config.surface, "deliver_files", new_callable=AsyncMock) as mock_send:
             await p.process(_make_result_event(session_id="s1"))
 
-        mock_send.assert_called_once_with(thread, [str(f)], str(tmp_path))
+        files = mock_send.await_args.args[0]
+        assert [item.path for item in files] == [str(f)]
 
 
 class TestAttachmentThreadIsolation:
@@ -1016,13 +1079,11 @@ class TestAttachmentThreadIsolation:
         config = _make_config(thread, runner)
         p = EventProcessor(config)
 
-        with patch(
-            "claude_discord.cogs.event_processor.send_files",
-            new_callable=AsyncMock,
-        ) as mock_send:
+        with patch.object(config.surface, "deliver_files", new_callable=AsyncMock) as mock_send:
             await p.process(_make_result_event(session_id="s1"))
 
-        mock_send.assert_called_once_with(thread, [str(f)], str(tmp_path))
+        files = mock_send.await_args.args[0]
+        assert [item.path for item in files] == [str(f)]
 
     @pytest.mark.asyncio
     async def test_other_thread_marker_not_read(
@@ -1040,10 +1101,7 @@ class TestAttachmentThreadIsolation:
         config = _make_config(thread, runner)
         p = EventProcessor(config)
 
-        with patch(
-            "claude_discord.cogs.event_processor.send_files",
-            new_callable=AsyncMock,
-        ) as mock_send:
+        with patch.object(config.surface, "deliver_files", new_callable=AsyncMock) as mock_send:
             await p.process(_make_result_event(session_id="s1"))
 
         mock_send.assert_not_called()
@@ -1239,6 +1297,73 @@ class TestContextStatsUsesPerTurnUsage:
         record = await repo.get(thread.id)
         assert record is not None
         assert record.context_used == 5000 + 30000 + 0
+
+    @pytest.mark.asyncio
+    async def test_message_delta_stream_event_corrects_stale_assistant_output_tokens(
+        self, thread: MagicMock, runner: MagicMock, tmp_path
+    ) -> None:
+        """Regression test for the "2 in 3 out" display bug.
+
+        An ASSISTANT event's own usage is a mid-generation snapshot — for a
+        turn that ends with a short text block, output_tokens can be far
+        below the true final count (captured live: assistant reported
+        output_tokens=1 for a turn that actually used 3). The real final
+        usage arrives moments later as a STREAM_EVENT whose parsed
+        input_tokens/output_tokens come from the message_delta's usage
+        (see claude_code_core.parser._parse_stream_event). That later event
+        must win — not the assistant's stale snapshot — in both the
+        completion-notice fields (event.output_tokens) and context stats.
+        """
+        from claude_discord.database.models import init_db
+        from claude_discord.database.repository import SessionRepository
+
+        db_path = str(tmp_path / "sessions.db")
+        await init_db(db_path)
+        repo = SessionRepository(db_path)
+        await repo.save(thread_id=thread.id, session_id="s-message-delta")
+
+        config = _make_config(thread, runner, repo=repo)
+        p = EventProcessor(config)
+
+        # ASSISTANT: mid-generation snapshot, output_tokens under-reported.
+        assistant_turn = StreamEvent(
+            message_type=MessageType.ASSISTANT,
+            text="done",
+            is_partial=False,
+            input_tokens=2,
+            output_tokens=1,
+            cache_read_tokens=54432,
+            cache_creation_tokens=2471,
+        )
+        await p.process(assistant_turn)
+
+        # STREAM_EVENT (message_delta): the true final usage for that turn.
+        message_delta = StreamEvent(
+            message_type=MessageType.STREAM_EVENT,
+            input_tokens=2,
+            output_tokens=3,
+            cache_read_tokens=54432,
+            cache_creation_tokens=2471,
+        )
+        await p.process(message_delta)
+
+        result = _make_result_event(
+            session_id="s-message-delta",
+            input_tokens=4,
+            output_tokens=368,
+            cache_read_tokens=54432,
+            cache_creation_tokens=56903,
+            context_window=200000,
+        )
+        await p.process(result)
+
+        # The completion notice must show the corrected 3, not the stale 1.
+        assert result.output_tokens == 3
+        assert result.input_tokens == 2
+
+        record = await repo.get(thread.id)
+        assert record is not None
+        assert record.context_used == 2 + 54432 + 2471
 
 
 class TestRateLimitEventProcessing:
@@ -1487,11 +1612,13 @@ class TestPermissionAutoApprove:
             ),
         )
         await p.process(event)
+        await _wait_for_prompt_message(thread)
 
         # inject_tool_result NOT called — user must click Allow/Deny
         runner.inject_tool_result.assert_not_called()
         # Discord embed + view posted
         thread.send.assert_called_once()
+        await p.cancel_prompts()
 
 
 class TestUserActionMentions:
@@ -1501,6 +1628,7 @@ class TestUserActionMentions:
     async def test_plan_approval_mentions_notify_user(
         self, thread: MagicMock, runner: MagicMock
     ) -> None:
+        runner.inject_tool_result = AsyncMock()
         config = _make_config(thread, runner, notify_user_id=42)
         p = EventProcessor(config)
 
@@ -1511,8 +1639,10 @@ class TestUserActionMentions:
                 is_plan_approval=True,
             )
         )
+        await _wait_for_prompt_message(thread)
 
-        assert thread.send.call_args.kwargs["content"] == "<@42>"
+        assert "<@42>" in _posted_mentions(thread)
+        await p.cancel_prompts()
 
     @pytest.mark.asyncio
     async def test_permission_request_mentions_notify_user(
@@ -1521,6 +1651,7 @@ class TestUserActionMentions:
         from claude_discord.claude.types import PermissionRequest
 
         runner.dangerously_skip_permissions = False
+        runner.inject_tool_result = AsyncMock()
         config = _make_config(thread, runner, notify_user_id=42)
         p = EventProcessor(config)
 
@@ -1534,9 +1665,11 @@ class TestUserActionMentions:
                 ),
             )
         )
+        await _wait_for_prompt_message(thread)
 
         thread.send.assert_called_once()
-        assert thread.send.call_args.kwargs["content"] == "<@42>"
+        assert "<@42>" in _posted_mentions(thread)
+        await p.cancel_prompts()
 
     @pytest.mark.asyncio
     async def test_elicitation_mentions_notify_user(
@@ -1544,6 +1677,7 @@ class TestUserActionMentions:
     ) -> None:
         from claude_discord.claude.types import ElicitationRequest
 
+        runner.inject_tool_result = AsyncMock()
         config = _make_config(thread, runner, notify_user_id=42)
         p = EventProcessor(config)
 
@@ -1558,6 +1692,8 @@ class TestUserActionMentions:
                 ),
             )
         )
+        await _wait_for_prompt_message(thread)
 
         thread.send.assert_called_once()
-        assert thread.send.call_args.kwargs["content"] == "<@42>"
+        assert "<@42>" in _posted_mentions(thread)
+        await p.cancel_prompts()

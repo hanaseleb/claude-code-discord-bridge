@@ -16,6 +16,7 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .child_env import STRIPPED_ENV_KEYS
 from .types import (
     ImageData,
     MessageType,
@@ -28,16 +29,58 @@ logger = logging.getLogger(__name__)
 
 _UNSET = object()
 
-_APPROVAL_MODE_MAP: dict[str, str] = {
-    "acceptEdits": "except-edit",
-    "full": "always",
-    "none": "never",
-}
+# Reasoning-effort levels accepted by the Codex CLI. Used to validate the value
+# before it is injected into a `-c model_reasoning_effort=` config override
+# (defence-in-depth against config injection), so this is the union across
+# models, not the set one model accepts: `minimal` is only offered by older
+# GPT-5.x models, `max`/`ultra` only by GPT-5.6 and GPT-6. The CLI rejects a
+# level its selected model does not support, and that error reaches the thread.
+VALID_CODEX_EFFORTS: frozenset[str] = frozenset(
+    {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+)
 
-# Reasoning-effort levels accepted by the Codex CLI / GPT-5.x models. Used to
-# validate the value before it is injected into a `-c model_reasoning_effort=`
-# config override (defence-in-depth against config injection).
-VALID_CODEX_EFFORTS: frozenset[str] = frozenset({"minimal", "low", "medium", "high", "xhigh"})
+# `codex exec`'s own sandbox policy values (see `codex exec --help`). Codex
+# picks one of these itself by default (config.toml-driven); ccdb never
+# overrides that choice unless an operator explicitly opts in — see
+# _resolve_codex_sandbox_override().
+VALID_CODEX_SANDBOX_MODES: frozenset[str] = frozenset(
+    {"read-only", "workspace-write", "danger-full-access"}
+)
+
+_CODEX_SANDBOX_OVERRIDE_ENV = "CCDB_CODEX_SANDBOX_OVERRIDE"
+
+
+def _resolve_codex_sandbox_override() -> str | None:
+    """Return the operator-configured `--sandbox` override, if any.
+
+    Deployment-scoped and env-only by design: this must never become a
+    per-thread/`/backend`-settable value, or any Discord user could disable
+    Codex's own OS-level sandbox for their own session. Codex's built-in
+    sandbox is host-portable and stays the default for every deployment; the
+    override exists only for hosts whose OS-level namespace restrictions
+    (e.g. AppArmor's ``apparmor_restrict_unprivileged_userns``) make Codex's
+    bundled bwrap-style sandbox helper fail before it can execute anything —
+    surfacing as ``bwrap: loopback: Failed RTM_NEWADDR: Operation not
+    permitted`` for every command, regardless of --sandbox mode (read-only
+    and workspace-write hit the same namespace setup as danger-full-access
+    skips). An operator on such a host sets this to ``danger-full-access`` to
+    defer entirely to ccdb's own outer boundary (systemd unit + per-session
+    worktree) instead — the same boundary Claude Code relies on, since it has
+    no OS-level sandbox of its own.
+    """
+    raw = os.environ.get(_CODEX_SANDBOX_OVERRIDE_ENV)
+    if not raw:
+        return None
+    value = raw.strip()
+    if value not in VALID_CODEX_SANDBOX_MODES:
+        logger.warning(
+            "%s=%r is not a valid Codex sandbox mode (%s); ignoring, Codex uses its own default.",
+            _CODEX_SANDBOX_OVERRIDE_ENV,
+            raw,
+            ", ".join(sorted(VALID_CODEX_SANDBOX_MODES)),
+        )
+        return None
+    return value
 
 
 def parse_codex_line(line: str) -> StreamEvent | None:
@@ -143,6 +186,15 @@ _RESUME_STREAM_DISCONNECT_PATTERN = re.compile(
     r"websocket closed by server before response\.completed",
     re.IGNORECASE,
 )
+# Once Codex has emitted a terminal event, the turn's output is complete and the
+# remaining stdout is just the CLI winding down. Draining it lets Codex release
+# its thread-store writer before a queued resume starts, but a CLI that never
+# closes stdout must not hold the per-thread run slot for the whole turn
+# timeout, so the post-completion read is bounded separately and falls back to
+# terminating the process.
+POST_COMPLETION_DRAIN_SECONDS = 10.0
+# Bound on the natural exit once stdout has reached EOF, for the same reason.
+PROCESS_EXIT_TIMEOUT_SECONDS = 10.0
 _RECOVERY_MESSAGE_LIMIT = 12
 _RECOVERY_MESSAGE_CHARS = 4_000
 _RECOVERY_TRANSCRIPT_CHARS = 24_000
@@ -288,6 +340,7 @@ class CodexRunner:
         self.append_system_prompt = append_system_prompt
         self.images = images
         self._process: asyncio.subprocess.Process | None = None
+        self._interrupt_requested = False
 
     async def run(
         self,
@@ -300,6 +353,7 @@ class CodexRunner:
         retried_without_resume = False
 
         while True:
+            self._interrupt_requested = False
             args = self._build_args(attempt_prompt, attempt_session_id)
             env = self._build_env()
             cwd = self.working_dir or os.getcwd()
@@ -409,6 +463,7 @@ class CodexRunner:
     async def interrupt(self) -> None:
         """Interrupt the subprocess with SIGINT."""
         if self._process and self._process.returncode is None:
+            self._interrupt_requested = True
             if os.name == "nt":
                 self._process.terminate()
             else:
@@ -466,12 +521,26 @@ class CodexRunner:
         """
         # Always under the `exec` subcommand. `resume` is its sub-subcommand.
         args = [self.command, "exec"]
+
+        if not self.dangerously_skip_permissions:
+            sandbox_override = _resolve_codex_sandbox_override()
+            if sandbox_override:
+                # `--sandbox` is a parent `exec` option; `exec resume` rejects
+                # it when it appears after `resume` (exit code 2), so it must
+                # be inserted before the `resume` subcommand below.
+                args.extend(["--sandbox", sandbox_override])
+
         if session_id:
             if not re.match(r"^[a-f0-9\-]+$", session_id):
                 raise ValueError(f"Invalid session_id format: {session_id!r}")
             args.append("resume")
 
         args.append("--json")
+        # ccdb's working directories are frequently plain folders, not git
+        # repos (e.g. the default CLAUDE_WORKING_DIR). Codex CLI refuses to
+        # run outside a git repo unless told otherwise; Claude Code has no
+        # such restriction, so this keeps the two backends interchangeable.
+        args.append("--skip-git-repo-check")
         if self.model:
             args.extend(["--model", self.model])
         if self.effort:
@@ -487,8 +556,13 @@ class CodexRunner:
 
         if self.dangerously_skip_permissions:
             args.append("--dangerously-bypass-approvals-and-sandbox")
-        elif self.permission_mode in _APPROVAL_MODE_MAP:
-            args.extend(["--ask-for-approval", _APPROVAL_MODE_MAP[self.permission_mode]])
+        # `codex exec` has no interactive approval loop (no human present, and
+        # ccdb cannot inject responses over stdin for Codex — see
+        # inject_tool_result), and current codex-cli (verified with 0.147.0) rejects
+        # `--ask-for-approval` on `exec` outright ("unexpected argument").
+        # `permission_mode` therefore has no CLI lever for Codex beyond the
+        # bypass flag above; Codex's own --sandbox default (or the operator
+        # override resolved above) is what actually governs execution.
 
         # --cd is only accepted by `codex exec`, not by `codex exec resume`.
         if self.working_dir and not session_id:
@@ -500,14 +574,7 @@ class CodexRunner:
         args.append("-")
         return args
 
-    _STRIPPED_ENV_KEYS = frozenset(
-        {
-            "CLAUDECODE",
-            "DISCORD_BOT_TOKEN",
-            "DISCORD_TOKEN",
-            "API_SECRET_KEY",
-        }
-    )
+    _STRIPPED_ENV_KEYS = STRIPPED_ENV_KEYS
 
     def _build_env(self) -> dict[str, str]:
         """Build environment variables for the subprocess."""
@@ -534,16 +601,38 @@ class CodexRunner:
         if self._process is None or self._process.stdout is None:
             raise RuntimeError("Process not started")
 
+        saw_terminal_event = False
+
         while True:
-            line = await self._process.stdout.readline()
+            read_timeout = (
+                POST_COMPLETION_DRAIN_SECONDS
+                if saw_terminal_event
+                else (self.timeout_seconds or None)
+            )
+            try:
+                line = await asyncio.wait_for(self._process.stdout.readline(), timeout=read_timeout)
+            except TimeoutError:
+                if not saw_terminal_event:
+                    raise
+                # The turn already reported its result; _cleanup() terminates
+                # the stuck CLI rather than leaving the thread waiting.
+                logger.warning(
+                    "Codex CLI kept stdout open %.0fs after the terminal event; terminating",
+                    POST_COMPLETION_DRAIN_SECONDS,
+                )
+                return
             if not line:
                 break
             decoded = line.decode("utf-8", errors="replace")
             event = parse_codex_line(decoded)
             if event:
                 yield event
+                # ``turn.completed`` can arrive before the CLI process exits.
+                # Keep draining stdout so ``wait()`` below observes the natural
+                # exit and Codex releases its thread-store writer before a
+                # queued resume starts.
                 if event.is_complete:
-                    return
+                    saw_terminal_event = True
                 # Atomic tools (e.g. file_changes) have no completion event of
                 # their own; pair them with a synthetic result so the live
                 # elapsed timer is cancelled instead of accumulating forever.
@@ -552,9 +641,26 @@ class CodexRunner:
                     yield completion
 
         if self._process.returncode is None:
-            await asyncio.wait_for(self._process.wait(), timeout=10)
+            try:
+                await asyncio.wait_for(self._process.wait(), timeout=PROCESS_EXIT_TIMEOUT_SECONDS)
+            except TimeoutError:
+                logger.warning(
+                    "Codex CLI did not exit %.0fs after stdout closed; terminating",
+                    PROCESS_EXIT_TIMEOUT_SECONDS,
+                )
+                if saw_terminal_event:
+                    # Reporting a turn timeout here would contradict the result
+                    # the thread already received.
+                    return
+                raise
 
         if self._process.returncode is not None and self._process.returncode > 0:
+            if self._interrupt_requested:
+                logger.info(
+                    "Codex CLI exited with code %d after an intentional interrupt",
+                    self._process.returncode,
+                )
+                return
             stderr_data = b""
             if self._process.stderr:
                 stderr_data = await self._process.stderr.read()

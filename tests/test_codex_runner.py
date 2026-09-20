@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,6 +11,19 @@ import pytest
 from claude_code_core.backend import SessionBackend
 from claude_code_core.codex_runner import CodexRunner, parse_codex_line
 from claude_code_core.types import MessageType
+
+
+@pytest.fixture(autouse=True)
+def _clean_codex_sandbox_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate tests from CCDB_CODEX_SANDBOX_OVERRIDE in the ambient environment.
+
+    A developer's real shell/.env (e.g. a live deployment) may export this to
+    work around a host-specific sandbox issue — that must never leak into the
+    argv-structure assertions below. Tests that specifically exercise the
+    override still call monkeypatch.setenv() themselves, which layers on top
+    of (and is undone independently of) this fixture's delenv.
+    """
+    monkeypatch.delenv("CCDB_CODEX_SANDBOX_OVERRIDE", raising=False)
 
 
 class _FakeStream:
@@ -53,6 +67,114 @@ class _FakeProcess:
         self.returncode = -9
 
 
+class _InterruptibleStream:
+    def __init__(self, interrupted: asyncio.Event) -> None:
+        self._interrupted = interrupted
+
+    async def readline(self) -> bytes:
+        await self._interrupted.wait()
+        return b""
+
+
+class _InterruptibleProcess(_FakeProcess):
+    def __init__(self) -> None:
+        super().__init__(returncode=0)
+        self.returncode = None
+        self.interrupted = asyncio.Event()
+        self.stdout = _InterruptibleStream(self.interrupted)
+
+    async def wait(self) -> int:
+        await self.interrupted.wait()
+        assert self.returncode is not None
+        return self.returncode
+
+    def send_signal(self, _signum: int) -> None:
+        self.returncode = 1
+        self.interrupted.set()
+
+
+class _CompletesBeforeExitProcess(_FakeProcess):
+    """Process that emits turn.completed before its natural exit is observed."""
+
+    def __init__(self, completed_line: bytes) -> None:
+        super().__init__(stdout_lines=[completed_line + b"\n"], returncode=0)
+        self.returncode = None
+        self.terminated = False
+        self.waited = False
+
+    async def wait(self) -> int:
+        self.waited = True
+        self.returncode = 0
+        return 0
+
+    def terminate(self) -> None:
+        self.terminated = True
+        super().terminate()
+
+
+class _HangsAfterCompletionProcess(_FakeProcess):
+    """Process that emits turn.completed and then never closes stdout or exits."""
+
+    def __init__(self, completed_line: bytes) -> None:
+        super().__init__(returncode=0)
+        self.returncode = None
+        self.terminated = False
+        self.exited = asyncio.Event()
+        self.stdout = _HangingAfterLinesStream([completed_line + b"\n"], self.exited)
+
+    async def wait(self) -> int:
+        await self.exited.wait()
+        assert self.returncode is not None
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = -15
+        self.exited.set()
+
+
+class _HangingAfterLinesStream:
+    """Yields the given lines, then blocks forever instead of signalling EOF."""
+
+    def __init__(self, lines: list[bytes], released: asyncio.Event) -> None:
+        self._lines = list(lines)
+        self._released = released
+
+    async def readline(self) -> bytes:
+        if self._lines:
+            return self._lines.pop(0)
+        await self._released.wait()
+        return b""
+
+    async def read(self) -> bytes:
+        return b""
+
+
+class _NeverExitsAfterEofProcess(_FakeProcess):
+    """Process that closes stdout after turn.completed but never exits."""
+
+    def __init__(self, completed_line: bytes) -> None:
+        super().__init__(stdout_lines=[completed_line + b"\n"], returncode=0)
+        self.returncode = None
+        self.terminated = False
+        self.exited = asyncio.Event()
+
+    async def wait(self) -> int:
+        await self.exited.wait()
+        assert self.returncode is not None
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = -15
+        self.exited.set()
+
+
+async def _collect(stream) -> list:
+    """Drain an async event stream into a list."""
+    return [event async for event in stream]
+
+
 class TestCodexRunnerIsBackend:
     """CodexRunner must satisfy the SessionBackend protocol."""
 
@@ -79,10 +201,52 @@ class TestCodexRunnerBuildArgs:
         assert "resume" in args
         assert "0199a213-81c0-7800-8aa1-bbab2a035a53" in args
 
-    def test_approval_mode_mapping(self) -> None:
-        runner = CodexRunner(command="codex", model="o4-mini", permission_mode="acceptEdits")
+    def test_never_emits_the_broken_ask_for_approval_flag(self) -> None:
+        """`codex exec` rejects `--ask-for-approval` outright on codex-cli >= ~0.13x
+        ("unexpected argument") — regression guard against reintroducing it.
+        `permission_mode` has no CLI lever for Codex (exec has no approval loop)."""
+        for mode in ("acceptEdits", "full", "none", "default", "auto", "plan"):
+            runner = CodexRunner(command="codex", model="o4-mini", permission_mode=mode)
+            args = runner._build_args("hello", session_id=None)
+            assert "--ask-for-approval" not in args
+            assert "-a" not in args
+
+    def test_no_sandbox_flag_by_default(self) -> None:
+        """Without CCDB_CODEX_SANDBOX_OVERRIDE set, ccdb must never pass --sandbox —
+        Codex picks its own (config.toml-driven) default, unchanged from today."""
+        runner = CodexRunner(command="codex", model="o4-mini")
         args = runner._build_args("hello", session_id=None)
-        assert any(a in args for a in ["--ask-for-approval", "-a"])
+        assert "--sandbox" not in args
+
+    def test_sandbox_override_from_env(self, monkeypatch) -> None:
+        monkeypatch.setenv("CCDB_CODEX_SANDBOX_OVERRIDE", "danger-full-access")
+        runner = CodexRunner(command="codex", model="o4-mini")
+        args = runner._build_args("hello", session_id=None)
+        assert args[args.index("--sandbox") + 1] == "danger-full-access"
+
+    def test_sandbox_override_precedes_resume_subcommand(self, monkeypatch) -> None:
+        monkeypatch.setenv("CCDB_CODEX_SANDBOX_OVERRIDE", "danger-full-access")
+        runner = CodexRunner(command="codex", model="o4-mini")
+        sid = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+        args = runner._build_args("hello", session_id=sid)
+        assert args.index("--sandbox") < args.index("resume")
+
+    def test_invalid_sandbox_override_is_ignored(self, monkeypatch) -> None:
+        """A typo'd override must fail closed — no --sandbox flag at all — rather
+        than passing an unvalidated string straight to the subprocess argv."""
+        monkeypatch.setenv("CCDB_CODEX_SANDBOX_OVERRIDE", "full-access")
+        runner = CodexRunner(command="codex", model="o4-mini")
+        args = runner._build_args("hello", session_id=None)
+        assert "--sandbox" not in args
+
+    def test_sandbox_override_not_applied_when_bypassing_permissions(self, monkeypatch) -> None:
+        """--dangerously-bypass-approvals-and-sandbox already disables sandboxing;
+        --sandbox must not also be added."""
+        monkeypatch.setenv("CCDB_CODEX_SANDBOX_OVERRIDE", "danger-full-access")
+        runner = CodexRunner(command="codex", model="o4-mini", dangerously_skip_permissions=True)
+        args = runner._build_args("hello", session_id=None)
+        assert "--sandbox" not in args
+        assert "--dangerously-bypass-approvals-and-sandbox" in args
 
     def test_dangerously_skip_permissions(self) -> None:
         runner = CodexRunner(command="codex", model="o4-mini", dangerously_skip_permissions=True)
@@ -94,6 +258,22 @@ class TestCodexRunnerBuildArgs:
         args = runner._build_args("hello", session_id=None)
         assert "--cd" in args or "-C" in args
         assert "/tmp/work" in args
+
+    def test_skip_git_repo_check_always_present(self) -> None:
+        """Working dirs are frequently plain folders, not git repos (e.g. the
+        default CLAUDE_WORKING_DIR). Codex CLI refuses to run outside a git
+        repo unless told otherwise, so ccdb must always pass this flag —
+        Claude Code has no such restriction, and ccdb aims to be backend-
+        agnostic from the user's point of view.
+        """
+        runner = CodexRunner(command="codex", model="o4-mini")
+        args = runner._build_args("hello", session_id=None)
+        assert "--skip-git-repo-check" in args
+
+    def test_skip_git_repo_check_present_on_resume(self) -> None:
+        runner = CodexRunner(command="codex", model="o4-mini")
+        args = runner._build_args("hello", session_id="0199a213-81c0-7800-8aa1-bbab2a035a53")
+        assert "--skip-git-repo-check" in args
 
     def test_prompt_is_not_in_args(self) -> None:
         runner = CodexRunner(command="codex", model="o4-mini")
@@ -221,6 +401,116 @@ class TestCodexRunnerClone:
 
 
 class TestCodexRunnerRun:
+    @pytest.mark.asyncio
+    async def test_drain_after_completion_is_bounded_and_falls_back_to_terminate(
+        self, monkeypatch
+    ) -> None:
+        """A Codex CLI that hangs after its terminal event must not stall the turn."""
+        monkeypatch.setattr(
+            "claude_code_core.codex_runner.POST_COMPLETION_DRAIN_SECONDS",
+            0.05,
+            raising=False,
+        )
+        completed_line = json.dumps({"type": "turn.completed", "usage": {}}).encode()
+        process = _HangsAfterCompletionProcess(completed_line)
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return process
+
+        monkeypatch.setattr(
+            "claude_code_core.codex_runner.asyncio.create_subprocess_exec",
+            fake_create_subprocess_exec,
+        )
+        # Long enough that only the post-completion drain bound can end the read.
+        runner = CodexRunner(command="codex", timeout_seconds=30)
+
+        events = await asyncio.wait_for(
+            _collect(runner.run("hello")),
+            timeout=5,
+        )
+
+        assert [event.is_complete for event in events] == [True]
+        assert [event.error for event in events] == [None]
+        assert process.terminated is True
+
+    @pytest.mark.asyncio
+    async def test_process_that_never_exits_after_eof_is_terminated_without_error(
+        self, monkeypatch
+    ) -> None:
+        """A stuck exit after stdout EOF must be terminated, not reported as a turn timeout."""
+        monkeypatch.setattr(
+            "claude_code_core.codex_runner.PROCESS_EXIT_TIMEOUT_SECONDS",
+            0.05,
+            raising=False,
+        )
+        completed_line = json.dumps({"type": "turn.completed", "usage": {}}).encode()
+        process = _NeverExitsAfterEofProcess(completed_line)
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return process
+
+        monkeypatch.setattr(
+            "claude_code_core.codex_runner.asyncio.create_subprocess_exec",
+            fake_create_subprocess_exec,
+        )
+        runner = CodexRunner(command="codex", timeout_seconds=30)
+
+        events = await asyncio.wait_for(_collect(runner.run("hello")), timeout=5)
+
+        assert [event.is_complete for event in events] == [True]
+        assert [event.error for event in events] == [None]
+        assert process.terminated is True
+
+    @pytest.mark.asyncio
+    async def test_turn_completed_waits_for_natural_process_exit(self, monkeypatch) -> None:
+        """A terminal event must not release the session while Codex still owns it."""
+        completed_line = json.dumps({"type": "turn.completed", "usage": {}}).encode()
+        process = _CompletesBeforeExitProcess(completed_line)
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return process
+
+        monkeypatch.setattr(
+            "claude_code_core.codex_runner.asyncio.create_subprocess_exec",
+            fake_create_subprocess_exec,
+        )
+        runner = CodexRunner(command="codex")
+
+        events = [event async for event in runner.run("hello")]
+
+        assert len(events) == 1
+        assert events[0].is_complete is True
+        assert process.waited is True
+        assert process.terminated is False
+
+    @pytest.mark.asyncio
+    async def test_intentional_interrupt_is_not_reported_as_cli_error(
+        self, monkeypatch, caplog
+    ) -> None:
+        process = _InterruptibleProcess()
+        process_started = asyncio.Event()
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            process_started.set()
+            return process
+
+        monkeypatch.setattr(
+            "claude_code_core.codex_runner.asyncio.create_subprocess_exec",
+            fake_create_subprocess_exec,
+        )
+        runner = CodexRunner(command="codex")
+
+        async def collect_events() -> list:
+            return [event async for event in runner.run("hello")]
+
+        run_task = asyncio.create_task(collect_events())
+        await process_started.wait()
+        await runner.interrupt()
+        events = await run_task
+
+        assert events == []
+        assert "Codex CLI exited with code 1" not in caplog.text
+
     @pytest.mark.asyncio
     async def test_resume_missing_rollout_falls_back_to_new_session(self, monkeypatch) -> None:
         stale_session = "13f2eb43-93cf-4df6-86d0-a20c035cc26e"
@@ -626,9 +916,15 @@ class TestCodexRunnerArgvStructure:
         codex exec [OPTIONS] [PROMPT]
         codex exec resume [OPTIONS] [SESSION_ID] [PROMPT]
 
-    ``exec`` accepts: ``--json``, ``--model``, ``--ask-for-approval``,
+    ``exec`` accepts: ``--json``, ``--model``, ``--sandbox``,
     ``--dangerously-bypass-approvals-and-sandbox``, ``--cd``.
-    ``exec resume`` accepts the same flags EXCEPT ``--cd`` (causes exit code 2).
+    ``exec resume`` accepts the same flags EXCEPT ``--sandbox`` and ``--cd``
+    (both cause exit code 2 when they appear after ``resume``; ``--sandbox``
+    must instead precede it — see test_sandbox_override_precedes_resume_subcommand
+    in TestCodexRunnerBuildArgs). ``--ask-for-approval`` is a global/
+    interactive-only flag, rejected by ``exec`` outright on codex-cli >=
+    ~0.13x ("unexpected argument") — ccdb never emits it (see
+    test_never_emits_the_broken_ask_for_approval_flag).
     The resume positional args come AFTER all flags, with SESSION_ID before PROMPT.
 
     These tests guard against regressions like the one that shipped briefly
@@ -665,13 +961,24 @@ class TestCodexRunnerArgvStructure:
         )
         args = runner._build_args("hello", session_id=sid)
         sid_idx = args.index(sid)
-        # --json, --model, --ask-for-approval must all come before SESSION_ID.
+        # --json, --model must both come before SESSION_ID.
         # NOTE: --cd is NOT supported by `codex exec resume` (only by `codex exec`).
-        for flag in ("--json", "--model", "--ask-for-approval"):
+        for flag in ("--json", "--model"):
             assert flag in args, f"{flag} missing from resume args"
             assert args.index(flag) < sid_idx, (
                 f"{flag} should appear before SESSION_ID in codex exec resume"
             )
+
+    def test_sandbox_override_precedes_resume_on_resumed_session(self, monkeypatch) -> None:
+        """--sandbox is an exec-level option, rejected by `exec resume` when it
+        appears after `resume` — the override must precede the subcommand."""
+        monkeypatch.setenv("CCDB_CODEX_SANDBOX_OVERRIDE", "danger-full-access")
+        sid = "019e29a0-d5b0-71f0-bdc0-46f09a06fdaf"
+        runner = CodexRunner(command="codex", model="gpt-5.4")
+        args = runner._build_args("hello", session_id=sid)
+        assert args.index("--sandbox") < args.index("resume"), (
+            "`codex exec resume --sandbox ...` is rejected by codex-cli with exit code 2"
+        )
 
     def test_cd_flag_not_passed_on_resume(self) -> None:
         """codex exec resume does not accept --cd; must be omitted to avoid exit code 2."""

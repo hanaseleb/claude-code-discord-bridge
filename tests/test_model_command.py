@@ -9,6 +9,7 @@ Codex models/efforts, not Claude ones.
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -39,6 +40,9 @@ def _offline_model_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
         return fallback
 
     monkeypatch.setattr("claude_discord.cogs.backend_command.claude_model_choices", _fallback_only)
+    # Codex discovery reads the host's own ~/.codex catalog, so leaving it on
+    # would make these assertions depend on whoever ran the suite.
+    monkeypatch.setenv("CCDB_MODEL_DISCOVERY", "0")
 
 
 async def _new_settings_repo() -> SettingsRepository:
@@ -150,6 +154,33 @@ class TestModelAutocomplete:
         # No Claude models leaked in.
         assert "sonnet" not in values
 
+    async def test_copilot_backend_suggests_copilot_models(self) -> None:
+        settings = await _settings()
+        await settings.set_backend("copilot")
+        cog = _make_cog(settings)
+
+        choices = await cog._model_name_autocomplete(_channel_interaction(), "")
+
+        values = {c.value for c in choices}
+        assert "auto" in values
+        assert values == {m for m, _ in SUGGESTED_MODELS["copilot"]}
+
+    async def test_copilot_autocomplete_injects_auto_when_discovery_lacks_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        settings = await _settings()
+        await settings.set_backend("copilot")
+        cog = _make_cog(settings)
+
+        monkeypatch.setattr(
+            "claude_discord.cogs.backend_command.codex_model_choices",
+            lambda *, fallback: [("gpt-6-astra", "GPT-6-Astra")],
+        )
+
+        choices = await cog._model_name_autocomplete(_channel_interaction(), "")
+
+        assert choices[0].value == "auto"
+
     async def test_codex_backend_suggests_latest_codex_model_first(self) -> None:
         settings = await _settings()
         await settings.set_backend("codex")
@@ -158,7 +189,37 @@ class TestModelAutocomplete:
 
         choices = await cog._model_name_autocomplete(interaction, "")
 
-        assert choices[0].value == "gpt-5.6-sol"
+        assert choices[0].value == "gpt-6-astra"
+
+    async def test_codex_backend_surfaces_discovered_models(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A Codex generation the CLI already knows must not need a ccdb release."""
+        monkeypatch.delenv("CCDB_MODEL_DISCOVERY", raising=False)
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        (tmp_path / "models_cache.json").write_text(
+            json.dumps(
+                {
+                    "models": [
+                        {
+                            "slug": "gpt-7",
+                            "display_name": "GPT-7",
+                            "description": "Newer than this release",
+                            "visibility": "list",
+                            "priority": 1,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        settings = await _settings()
+        await settings.set_backend("codex")
+        cog = _make_cog(settings)
+
+        choices = await cog._model_name_autocomplete(_channel_interaction(), "")
+
+        assert [c.value for c in choices] == ["gpt-7"]
 
     async def test_filters_by_current_substring(self) -> None:
         settings = await _settings()

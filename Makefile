@@ -2,7 +2,7 @@
 
 # One-time setup after cloning: install uv (if needed) and register the committed git hooks.
 setup:
-	@if ! command -v uv &>/dev/null; then \
+	@if ! command -v uv >/dev/null 2>&1; then \
 		echo "❌ 'uv' is not installed. Install: https://docs.astral.sh/uv/getting-started/installation/"; \
 		exit 1; \
 	fi
@@ -11,7 +11,7 @@ setup:
 
 # Verify that one-time setup has been completed (hooks configured + uv present).
 check-setup:
-	@if ! command -v uv &>/dev/null; then \
+	@if ! command -v uv >/dev/null 2>&1; then \
 		echo "❌ 'uv' is not installed. Run: make setup"; \
 		exit 1; \
 	fi
@@ -23,12 +23,12 @@ check-setup:
 
 # Auto-format all Python source files.
 format:
-	uv run ruff format claude_discord/ tests/
+	uv run ruff format claude_discord/ claude_teams/ tests/
 
 # Lint check (no auto-fix) — same as CI.
 check:
-	uv run ruff format --check claude_discord/ tests/
-	uv run ruff check claude_discord/ tests/
+	uv run ruff format --check claude_discord/ claude_teams/ tests/
+	uv run ruff check claude_discord/ claude_teams/ tests/
 
 # Run the full test suite.
 test:
@@ -42,6 +42,10 @@ pr:
 	@BRANCH=$$(git rev-parse --abbrev-ref HEAD); \
 	git push -u origin "$$BRANCH"; \
 	gh pr create --fill --web
+
+# Report whether the bot is running code that is not on origin/main.
+drift:
+	@./scripts/check-deploy-drift.sh
 
 # Enable dev mode: EbiBot loads claude_discord from this worktree on next restart.
 dev-on:

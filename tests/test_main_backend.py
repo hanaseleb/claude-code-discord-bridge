@@ -82,3 +82,11 @@ class TestEnvVarRename:
     def test_ccdb_backend_env(self) -> None:
         config = self._load({"CCDB_BACKEND": "codex"})
         assert config["backend"] == "codex"
+
+    def test_ccdb_backend_env_copilot(self) -> None:
+        config = self._load({"CCDB_BACKEND": "copilot"})
+        assert config["backend"] == "copilot"
+
+    def test_ccdb_copilot_command_env(self) -> None:
+        config = self._load({"CCDB_COPILOT_COMMAND": "/usr/bin/copilot"})
+        assert config["copilot_command"] == "/usr/bin/copilot"

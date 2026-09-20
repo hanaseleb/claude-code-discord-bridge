@@ -11,6 +11,8 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from claude_discord.database.notification_repo import NotificationRepository
 from claude_discord.ext.api_server import ApiServer
+from claude_discord.thread_marker import family_code
+from claude_discord.thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 
 
 @pytest.fixture
@@ -71,6 +73,29 @@ class TestHealth:
         data = await resp.json()
         assert data["status"] == "ok"
         assert "timestamp" in data
+
+    @pytest.mark.asyncio
+    async def test_health_reports_no_overdue_when_clean(self, client: TestClient) -> None:
+        resp = await client.get("/api/health")
+        assert (await resp.json())["overdue_notifications"] == 0
+
+    @pytest.mark.asyncio
+    async def test_health_counts_overdue_notifications(
+        self, client: TestClient, repo: NotificationRepository
+    ) -> None:
+        """A notification long past its time is the symptom of a dead dispatcher.
+
+        The previous outage was invisible precisely because every endpoint kept
+        answering normally while nothing was delivered, so the health check now
+        reports the backlog instead of a bare "ok".
+        """
+        await repo.create(message="取り残された", scheduled_at="2020-01-01T09:00:00")
+        await repo.create(message="まだ先", scheduled_at="2099-01-01T09:00:00")
+
+        data = await (await client.get("/api/health")).json()
+
+        assert data["overdue_notifications"] == 1
+        assert data["status"] == "degraded"
 
 
 class TestNotify:
@@ -302,7 +327,9 @@ class TestNotifyThread:
         data = await resp.json()
         assert data["status"] == "sent"
         assert data["thread_id"] == "111222333"
-        channel.create_thread.assert_called_once_with(name="PR Review")
+        channel.create_thread.assert_called_once_with(
+            name="PR Review", auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES
+        )
         thread.send.assert_called_once_with("PR #42 needs review")
         # Channel.send should NOT be called — message goes to thread
         channel.send.assert_not_called()
@@ -323,7 +350,9 @@ class TestNotifyThread:
             },
         )
         assert resp.status == 200
-        channel.create_thread.assert_called_once_with(name="Summary Thread")
+        channel.create_thread.assert_called_once_with(
+            name="Summary Thread", auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES
+        )
         call_kwargs = thread.send.call_args.kwargs
         assert "embed" in call_kwargs
         channel.send.assert_not_called()
@@ -398,7 +427,9 @@ class TestNotifyThread:
             json={"message": "Long title", "thread_name": raw_name},
         )
         assert resp.status == 200
-        channel.create_thread.assert_called_once_with(name="a" * 100)
+        channel.create_thread.assert_called_once_with(
+            name="a" * 100, auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES
+        )
 
 
 class TestSchedule:
@@ -577,6 +608,101 @@ class TestSpawn:
         await client.start_server()
         yield client
         await client.close()
+
+    @pytest.mark.asyncio
+    async def test_spawn_forwards_user_id_as_invite(
+        self, spawn_client: TestClient, mock_cog: MagicMock
+    ) -> None:
+        """A caller-supplied user_id must reach spawn_session, not be dropped."""
+        resp = await spawn_client.post(
+            "/api/spawn",
+            json={"prompt": "Check the backlog", "user_id": 418192003549888523},
+        )
+        assert resp.status == 201
+        assert mock_cog.spawn_session.await_args.kwargs["invite_user_id"] == 418192003549888523
+
+    @pytest.mark.asyncio
+    async def test_spawn_marks_the_thread_as_agent_spawned(
+        self, spawn_client: TestClient, mock_cog: MagicMock
+    ) -> None:
+        """Every /api/spawn thread is agent-started; the title has to say so."""
+        await spawn_client.post("/api/spawn", json={"prompt": "Check the backlog"})
+        assert mock_cog.spawn_session.await_args.kwargs["agent_spawned"] is True
+
+    @pytest.mark.asyncio
+    async def test_spawn_forwards_parent_thread_id(
+        self, spawn_client: TestClient, mock_cog: MagicMock
+    ) -> None:
+        """The caller's thread is what makes the two titles match; dropping it is silent."""
+        resp = await spawn_client.post(
+            "/api/spawn",
+            json={"prompt": "Check the backlog", "parent_thread_id": 1550121254361768021},
+        )
+        assert resp.status == 201
+        assert mock_cog.spawn_session.await_args.kwargs["parent_thread_id"] == 1550121254361768021
+        body = await resp.json()
+        assert body["parent_thread_id"] == "1550121254361768021"
+        assert body["family"] == family_code(1550121254361768021)
+
+    @pytest.mark.asyncio
+    async def test_spawn_records_lineage(
+        self, repo: NotificationRepository, bot_with_text_channel: MagicMock, mock_cog: MagicMock
+    ) -> None:
+        """The titles are the visible half; /api/sessions needs the stored half."""
+        bot_with_text_channel.cogs = {"ClaudeChatCog": mock_cog}
+        lineage_repo = MagicMock()
+        lineage_repo.record = AsyncMock()
+        api = ApiServer(
+            repo=repo,
+            bot=bot_with_text_channel,
+            default_channel_id=12345,
+            lineage_repo=lineage_repo,
+        )
+        client = TestClient(TestServer(api.app))
+        await client.start_server()
+        try:
+            await client.post(
+                "/api/spawn",
+                json={"prompt": "Check the backlog", "parent_thread_id": 1550121254361768021},
+            )
+        finally:
+            await client.close()
+        lineage_repo.record.assert_awaited_once_with(
+            999888777, 1550121254361768021, family_code(1550121254361768021)
+        )
+
+    @pytest.mark.asyncio
+    async def test_spawn_rejects_non_numeric_parent_thread_id(
+        self, spawn_client: TestClient, mock_cog: MagicMock
+    ) -> None:
+        resp = await spawn_client.post(
+            "/api/spawn", json={"prompt": "Hello", "parent_thread_id": "the other one"}
+        )
+        assert resp.status == 400
+        mock_cog.spawn_session.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_spawn_without_user_id_invites_nobody(
+        self, spawn_client: TestClient, mock_cog: MagicMock
+    ) -> None:
+        await spawn_client.post("/api/spawn", json={"prompt": "Check the backlog"})
+        assert mock_cog.spawn_session.await_args.kwargs["invite_user_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_spawn_rejects_non_numeric_user_id(
+        self, spawn_client: TestClient, mock_cog: MagicMock
+    ) -> None:
+        resp = await spawn_client.post("/api/spawn", json={"prompt": "Hello", "user_id": "@ebi"})
+        assert resp.status == 400
+        mock_cog.spawn_session.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_spawn_rejects_non_positive_user_id(
+        self, spawn_client: TestClient, mock_cog: MagicMock
+    ) -> None:
+        resp = await spawn_client.post("/api/spawn", json={"prompt": "Hello", "user_id": 0})
+        assert resp.status == 400
+        mock_cog.spawn_session.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_spawn_returns_201_with_thread_info(
@@ -1148,6 +1274,30 @@ class TestIngest:
         inside = api._unique_path(tmp_path / "ingest" / "req" / "ok.txt")
         assert inside is not None and str(inside).startswith(str((tmp_path / "ingest").resolve()))
 
+    def test_unique_path_walks_past_existing_collisions(
+        self, repo: NotificationRepository, bot_with_text_channel: MagicMock, tmp_path
+    ) -> None:
+        # The disambiguation loop is what stops a same-named attachment from
+        # overwriting an earlier one, so it has to keep stepping past every name
+        # already taken — not just the first.
+        api = ApiServer(repo=repo, bot=bot_with_text_channel, working_dir=str(tmp_path))
+        dest = tmp_path / "ingest" / "req"
+        dest.mkdir(parents=True)
+        (dest / "image.png").write_bytes(b"a")
+        (dest / "image_2.png").write_bytes(b"b")
+        got = api._unique_path(dest / "image.png")
+        assert got is not None and got.name == "image_3.png"
+
+    def test_unique_path_refuses_rather_than_inventing_a_name_when_exhausted(
+        self, repo: NotificationRepository, bot_with_text_channel: MagicMock, tmp_path, monkeypatch
+    ) -> None:
+        # Every candidate taken → refuse (the caller turns this into a 400)
+        # rather than fall back to a random name nothing else can predict.
+        api = ApiServer(repo=repo, bot=bot_with_text_channel, working_dir=str(tmp_path))
+        (tmp_path / "ingest").mkdir()
+        monkeypatch.setattr(os.path, "exists", lambda _p: True)
+        assert api._unique_path(tmp_path / "ingest" / "image.png") is None
+
     def test_contained_path_rejects_a_sibling_with_the_root_as_a_name_prefix(
         self, repo: NotificationRepository, bot_with_text_channel: MagicMock, tmp_path
     ) -> None:
@@ -1535,3 +1685,155 @@ class TestIngestResult:
             assert any("<@999>" in s and "回答ができました" in s for s in contents)
         finally:
             await client.close()
+
+
+class TestBinaryAttachmentMisdetectedAsZip:
+    """A binary attachment must survive being mistaken for a zip archive.
+
+    ``zipfile.is_zipfile()`` looks for the end-of-central-directory signature
+    (``PK\\x05\\x06``) near the end of the file — it does not require the file to
+    *start* like a zip. Any binary can contain those four bytes by chance, and
+    Windows event logs (.evtx), memory dumps and packet captures are exactly the
+    kind of large opaque blobs where that happens.
+
+    When it did, the expander treated the file as an archive, "extracted" its
+    zero members, and then deleted the original — destroying the attachment and
+    reporting ``attachments_saved: 0``. Reproduced against the live endpoint
+    with a real 1.1 MB Admin.evtx before this was fixed.
+    """
+
+    INGEST_TOKEN = "ingest-secret-xyz"
+    AUTH = {"Authorization": f"Bearer {INGEST_TOKEN}"}
+
+    @pytest.fixture
+    def mock_cog(self) -> MagicMock:
+        thread = MagicMock()
+        thread.id = 111222333
+        thread.name = "Ingested thread"
+        cog = MagicMock()
+        cog.spawn_session = AsyncMock(return_value=thread)
+        return cog
+
+    @pytest.fixture
+    def bot_with_text_channel(self, mock_cog: MagicMock) -> MagicMock:
+        import discord
+
+        b = MagicMock()
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.send = AsyncMock()
+        b.get_channel.return_value = channel
+        b.cogs = {"ClaudeChatCog": mock_cog}
+        return b
+
+    @pytest.fixture
+    async def client(
+        self, repo: NotificationRepository, bot_with_text_channel: MagicMock, tmp_path
+    ) -> TestClient:
+        api = ApiServer(
+            repo=repo,
+            bot=bot_with_text_channel,
+            default_channel_id=12345,
+            ingest_token=self.INGEST_TOKEN,
+            working_dir=str(tmp_path),
+        )
+        c = TestClient(TestServer(api.app))
+        await c.start_server()
+        yield c
+        await c.close()
+
+    @staticmethod
+    def _evtx_containing_eocd() -> bytes:
+        """A .evtx-shaped blob ending in a well-formed, empty EOCD record.
+
+        Built deterministically rather than by scribbling the signature into
+        random bytes: ``is_zipfile`` also validates the trailing comment-length
+        field, so a random blob only trips it some of the time and the test
+        would be flaky. This is the worst realistic case — a binary that any
+        zip reader agrees is an archive containing nothing.
+        """
+        import struct
+
+        eocd = b"PK\x05\x06" + struct.pack("<HHHHIIH", 0, 0, 0, 0, 0, 0, 0)
+        return b"ElfFile\x00" + bytes(200_000) + eocd
+
+    @pytest.mark.asyncio
+    async def test_binary_that_looks_like_a_zip_is_not_deleted(
+        self, client: TestClient, tmp_path
+    ) -> None:
+        import base64
+        import hashlib
+
+        raw = self._evtx_containing_eocd()
+        resp = await client.post(
+            "/api/ingest",
+            json={
+                "content": "see log",
+                "attachments": [{"filename": "Admin.evtx", "data": base64.b64encode(raw).decode()}],
+            },
+            headers=self.AUTH,
+        )
+        assert resp.status == 201
+        assert (await resp.json())["attachments_saved"] == 1
+
+        found = list(tmp_path.glob("ingest/*/Admin.evtx"))
+        assert len(found) == 1, "the attachment must still exist on disk"
+        assert hashlib.sha256(found[0].read_bytes()).hexdigest() == (
+            hashlib.sha256(raw).hexdigest()
+        ), "and must be byte-for-byte intact"
+
+    @pytest.mark.asyncio
+    async def test_a_genuinely_empty_zip_is_kept_rather_than_deleted(
+        self, client: TestClient, tmp_path
+    ) -> None:
+        # Nothing to replace it with, so removing it would leave the session
+        # with strictly less than it was sent.
+        import base64
+        import io
+        import zipfile as zf
+
+        buf = io.BytesIO()
+        with zf.ZipFile(buf, "w"):
+            pass
+        resp = await client.post(
+            "/api/ingest",
+            json={
+                "content": "empty bundle",
+                "attachments": [
+                    {"filename": "b.zip", "data": base64.b64encode(buf.getvalue()).decode()}
+                ],
+            },
+            headers=self.AUTH,
+        )
+        assert resp.status == 201
+        assert list(tmp_path.glob("ingest/*/b.zip"))
+
+    @pytest.mark.asyncio
+    async def test_a_real_bundle_is_still_expanded_and_the_zip_removed(
+        self, client: TestClient, tmp_path
+    ) -> None:
+        # The behaviour that must not regress.
+        import base64
+        import io
+        import zipfile as zf
+
+        buf = io.BytesIO()
+        with zf.ZipFile(buf, "w") as z:
+            z.writestr("Admin.evtx", b"ElfFile\x00payload")
+        resp = await client.post(
+            "/api/ingest",
+            json={
+                "content": "bundle",
+                "attachments": [
+                    {
+                        "filename": "teams-attachments.zip",
+                        "data": base64.b64encode(buf.getvalue()).decode(),
+                    }
+                ],
+            },
+            headers=self.AUTH,
+        )
+        assert resp.status == 201
+        member = list(tmp_path.glob("ingest/*/**/Admin.evtx"))
+        assert len(member) == 1
+        assert member[0].read_bytes() == b"ElfFile\x00payload"
+        assert not list(tmp_path.glob("ingest/*/teams-attachments.zip"))

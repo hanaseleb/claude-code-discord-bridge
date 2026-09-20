@@ -728,7 +728,7 @@ class TestStopViewRunnerSync:
     subprocess.  Without this, Stop sends SIGINT to the original runner whose
     _process is None and has no effect.
 
-    See: https://github.com/ebibibi/claude-code-discord-bridge/issues/174
+    See: https://github.com/ebibibi/ebi-agent-chat-relay/issues/174
     """
 
     @pytest.fixture
@@ -1580,10 +1580,12 @@ class TestGlobalSessionSemaphore:
         gate.set()
         await asyncio.gather(t1, t2)
 
+        # The wait is now an out-of-band notice rather than a raw message, so
+        # it arrives as an embed the surface built.
         waiting_msgs = [
             c
             for c in thread.send.call_args_list
-            if c.args and isinstance(c.args[0], str) and "\u23f3" in c.args[0]
+            if "\u23f3" in str(c.kwargs.get("embed", "").description or "")
         ]
         assert len(waiting_msgs) >= 1
 

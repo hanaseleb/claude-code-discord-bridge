@@ -138,6 +138,11 @@ async def test_setup_bridge_returns_components(tmp_path: object) -> None:
     assert isinstance(result, BridgeComponents)
     assert result.session_repo is not None
     assert result.session_repo.db_path == str(tmp_path / "sessions.db")  # type: ignore[operator]
+    assert result.frontend_threads is not None
+    assert result.ask_repo is not None
+    assert result.usage_repo is not None
+    assert result.frontend is not None
+    assert result.frontend.name == "multi"
 
 
 @pytest.mark.asyncio
@@ -169,6 +174,54 @@ def _make_api_server() -> MagicMock:
     server.lounge_repo = None
     server.port = 8099
     return server
+
+
+@pytest.mark.asyncio
+async def test_setup_bridge_registers_notification_dispatcher(tmp_path: object) -> None:
+    """An API server means scheduled notifications must have a delivery loop.
+
+    Regression: /api/schedule accepted and stored notifications that nothing
+    ever read back, because the only send loop lived in a consumer's custom
+    Cog and pointed at a different database file.
+    """
+    from claude_discord.database.notification_repo import NotificationRepository
+
+    bot = _make_bot()
+    api_server = _make_api_server()
+    api_server.repo = MagicMock(spec=NotificationRepository)
+
+    await setup_bridge(
+        bot,
+        _make_runner(),
+        api_server=api_server,
+        session_db_path=str(tmp_path / "sessions.db"),  # type: ignore[operator]
+        enable_scheduler=False,
+    )
+
+    dispatchers = [
+        call.args[0]
+        for call in bot.add_cog.call_args_list
+        if call.args[0].__class__.__name__ == "NotificationDispatchCog"
+    ]
+    assert len(dispatchers) == 1, "an API server must come with exactly one dispatcher"
+    # Sharing the object — not a matching path — is what prevents the drift.
+    assert dispatchers[0].repo is api_server.repo
+
+
+@pytest.mark.asyncio
+async def test_setup_bridge_skips_dispatcher_without_api_server(tmp_path: object) -> None:
+    """No API server means nothing writes notifications, so nothing polls."""
+    bot = _make_bot()
+
+    await setup_bridge(
+        bot,
+        _make_runner(),
+        session_db_path=str(tmp_path / "sessions.db"),  # type: ignore[operator]
+        enable_scheduler=False,
+    )
+
+    cog_names = [call.args[0].__class__.__name__ for call in bot.add_cog.call_args_list]
+    assert "NotificationDispatchCog" not in cog_names
 
 
 def test_apply_to_api_server_wires_task_and_lounge_repos(tmp_path: object) -> None:
@@ -495,6 +548,41 @@ async def test_setup_bridge_attaches_worktree_manager_when_pre_initialized_to_no
     )
 
     assert isinstance(bot.worktree_manager, WorktreeManager)
+
+
+@pytest.mark.asyncio
+async def test_setup_bridge_warns_when_worktree_base_dir_is_unset(
+    tmp_path: object,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unset WORKTREE_BASE_DIR must warn, not pass silently.
+
+    Sessions are instructed to create ``wt-{thread_id}`` regardless of this setting,
+    so a disabled manager means worktrees accumulate forever. Only the *enabled*
+    branch used to log, which made the leaking configuration the quiet one.
+    """
+    import logging
+
+    monkeypatch.delenv("WORKTREE_BASE_DIR", raising=False)
+    bot = _make_bot()
+    bot.worktree_manager = None
+    runner = _make_runner()
+
+    with caplog.at_level(logging.WARNING, logger="claude_discord.setup"):
+        await setup_bridge(
+            bot,
+            runner,
+            session_db_path=str(tmp_path / "sessions.db"),  # type: ignore[operator]
+            enable_scheduler=False,
+        )
+
+    assert any(
+        "WORKTREE_BASE_DIR" in record.message
+        for record in caplog.records
+        if record.levelno >= logging.WARNING
+    )
+    assert bot.worktree_manager is None
 
 
 @pytest.mark.asyncio

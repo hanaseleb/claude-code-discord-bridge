@@ -27,7 +27,7 @@ main（常にリリース可能）
    ```
 3. **変更を加える** — コードを書き、テストを追加
 4. ブランチを **Push** して `main` に対して **PR を開く**
-5. **CI が自動実行** — Python 3.10/3.11/3.12 でテスト + lint、CodeQL セキュリティスキャン
+5. **CI が自動実行** — Python 3.12/3.13 でテスト + lint、CodeQL セキュリティスキャン
 6. CI が通過しレビューされたら、`main` に**マージ**
 
 ### ブランチ命名
@@ -40,8 +40,8 @@ main（常にリリース可能）
 ## 開発環境のセットアップ
 
 ```bash
-git clone https://github.com/ebibibi/claude-code-discord-bridge.git
-cd claude-code-discord-bridge
+git clone https://github.com/ebibibi/ebi-agent-chat-relay.git
+cd ebi-agent-chat-relay
 uv sync --dev
 make setup   # git hooks を登録（クローン後に一度だけ実行）
 ```
@@ -59,17 +59,117 @@ uv run pytest tests/ -v --cov=claude_discord
 
 PR を提出する前にすべてのテストが通過している必要があります。
 
+## 稼働中のボットで動作確認する（dev worktree モード）
+
+ユニットテストだけでは Discord 上の挙動をすべて検証できません。このリポジトリからボットを
+起動している場合、ボットの読み込み先を worktree に向けることで、本体ツリーではなく自分の
+ブランチを読ませられます。再インストールも editable install の切り替えも不要です:
+
+```bash
+git worktree add ../wt-my-feature -b feature/my-feature
+cd ../wt-my-feature
+make dev-on    # ~/.ccdb-dev-worktree を書き込んでボットを再起動
+# ... Discord 上で変更を実際に操作して確認 ...
+make dev-off   # マーカーを削除して本体ツリーに戻して再起動
+make drift     # ボットは origin/main の最新コードを動かしているか？
+```
+
+`make dev-on` は worktree のパスを `~/.ccdb-dev-worktree` に書き込みます。
+`scripts/pre-start.sh` が仕込む import フックがそのマーカーを読み、`claude_discord` /
+`claude_code_core` の import を worktree へ横取りします。`dev-on` / `dev-off` は
+`discord-bot` という systemd ユニットを再起動するので、デプロイ構成が異なる場合は
+Makefile を調整してください。
+
+**dev モードには有効期限がありません。** `make dev-on` を切り忘れると、サイドブランチが
+そのまま本番に居座り続け、マージした PR は「デプロイされたように見えて実際は動いていない」
+状態になります。`make drift`（`scripts/check-deploy-drift.sh`）はそれを検出します:
+worktree とブランチ名を示し、そのコミットが `origin/main` の祖先かどうかを判定し、
+結果として動いていないマージ済みコミット数を数え、dev モードが何日続いているかを報告します。
+比較対象はリモート参照で、古くなっている可能性のあるローカル `main` は使いません。
+`pre-start.sh` は起動のたびに同じレポートを出力します。
+
+**本体ツリーモードもまた古くなります。** dev worktree の質問にだけ答えて他はすべて `OK` を
+返すのでは、「そのために書かれたケースだけを報告し、残りは素通しするガード」になってしまいます。
+チェックアウトを更新するのは `pre-start.sh` だけなので、再起動していないボットは起動前に
+マージされたコードを提供し続けます。しかもこれは dev モードとまったく同じように無言です。
+ツリーは `main` と表示され、`git pull` は成功し続けます。そこで `make drift` は
+**実行中のプロセス**と `origin/main` も比較します。誠実な指標は「チェックアウトが遅れているか」
+ではなく（再起動を伴わない pull は何も変えません）「ボットの起動後にどのコミットが着地したか」で、
+これはサービスの `ActiveEnterTimestamp` から求めます。そのうえで報告するのは、動いていない
+コミットのうち **最も古いもの** が何日待たされているかです。最新コミットの経過日数ではなく、
+実際の待ち時間の長さがこれにあたります。再起動は意図的にまとめて行うものなので
+（実行中のセッションは再起動を生き延びません）、初日から報告はしつつ、失敗扱いにするのは
+`CCDB_STALE_DAYS`（デフォルト `3`）を超えてからです。systemd がないマシンや、ユニットを
+読み取れない場合は、無言で通過させずにその旨を報告します。ユニット名は `CCDB_SERVICE` で
+上書きできます（デフォルト `discord-bot`）。
+
+**再起動で実際に変わるコミットだけを数えます。** 再起動は実行中のセッションをすべて殺すので、
+再起動を要求するアラートはそれに見合うものでなければなりません。見合わなければ運用者は再起動を
+見送り、検査は何日も赤のまま放置され、やがて誰も読まなくなります。`docs/`・`tests/`・
+`examples/`・`.github/`・`LICENSE`・トップレベルの `*.md` しか触らないコミットは、ボットの
+挙動を1ビットも変えられません。`uv.lock` だけを変更し、更新した依存をすべて
+`dependency-type: direct:development` と表明している Dependabot のバンプも同様です。
+どちらも数えず、報告する経過日数は**再起動が必要なコミットのうち最も古いもの**から求めます。
+それ以外はすべて数えます。変更ファイル一覧を読み取れなかったコミットも数えます。分類できない
+ものは「数える」でなければならず、「無害と見なす」にしてはいけません。
+
+終了コード: `0` 最新のコードが動作中、または dev モードだがマージ済みコードを動かしている、
+`1` ドリフト（未マージのコードで dev モード、またはマージ済みコミットがしきい値を超えて
+未デプロイ）、`2` dev モードが設定されているが使用不能でマーカーの参照先が存在しない
+（フックは無言で本体ツリーにフォールバックします）。
+
+本体ツリーへ戻す前に `.env` を確認してください。自分のブランチだけが解釈する値は、
+本体ツリーではデフォルトにフォールバックし、エラーを出さないまま挙動が変わります。
+
 ## コードスタイル
 
 - **フォーマッター**: `ruff format`
 - **リンター**: `ruff check`
 - **型ヒント**: すべての関数シグネチャに必須
-- **Python**: 3.10+（モダンな構文のために `from __future__ import annotations` を使用）
+- **Python**: 3.12+（モダンな構文のために `from __future__ import annotations` を使用）
 
 ```bash
 uv run ruff check claude_discord/
 uv run ruff format claude_discord/
 ```
+
+## Discord スレッドの作成
+
+`create_thread()` の呼び出しでは、必ず共有の自動アーカイブ期間を渡してください:
+
+```python
+from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
+
+thread = await channel.create_thread(
+    name=name,
+    auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES,
+)
+```
+
+Discord の自動アーカイブ期間はスレッド作成時に確定し、既定値は短めです。アーカイブされたスレッドは
+チャンネルのスレッド一覧から消えるため、利用者がまだ作業中だと思っている会話が削除されたように
+見えてしまいます。`tests/test_thread_policy.py` は `claude_discord/` と、`examples/ebibot/cogs/` の
+サンプル Cog の両方を走査し、キーワードを付け忘れた呼び出しや、定数を使わず数値をハードコードした
+呼び出しがあると失敗します。これは Discord の挙動に関するルールであって、どのパッケージに書かれた
+呼び出しかは関係ありません。カスタム Cog も同じ規則に従います。
+
+## 個人情報を出荷するソースに残さない
+
+このリポジトリは public であり、`examples/ebibot/` は実在するインスタンスの設定そのものです。つまり、
+個人的な事情が紛れ込むのはまさにここです。「なぜこの Cog が存在するのか」を docstring に書くのはごく
+自然なことであり、そして自然に書こうとすると、その運用をしている人物の名前を書いてしまいます。
+
+`tests/test_no_personal_identifiers.py` は `claude_discord/`、`claude_code_core/`、`claude_teams/`、
+`examples/` を走査し、出荷されるソースが実在の人物名を含んでいると失敗します。このチェックは意図的に
+狭く作ってあります — 対象は「名前」であって「話題」ではありません。「日本語を書くな」のような広い
+ルールや、誰かが使っていそうなツール名の一覧は誤検知を生み、誤検知は抑制され、抑制されたガードは
+もはやガードではないからです。
+
+ある機能がどうしても特定個人の運用ルールを必要とする場合は、それをコードに埋め込むのではなく、
+リポジトリの外を指し示してください。`ThreadCompletionCog` がその参照実装です。Cog 側には汎用部分
+（バッチ化、セッションと transcript の解決、マニフェストの生成）だけを残し、インスタンス固有の指示は
+`THREAD_COMPLETION_PROMPT_FILE` が指すファイルから読み込みます。パスが読めない場合は、処理を落とすの
+ではなく汎用プロンプトにフォールバックします。
 
 ## プロジェクト構造
 

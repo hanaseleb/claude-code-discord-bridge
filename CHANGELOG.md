@@ -1,6 +1,6 @@
 # Changelog
 
-Last updated: 2026-07-27
+Last updated: 2026-08-11
 
 All notable changes to this project will be documented in this file.
 
@@ -9,13 +9,274 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Spawn lineage: parent and child titles now match** (#700) — the `🤖` marker said a thread was
+  started by an agent but not by *which* agent, so several concurrent fan-outs read as one flat pile
+  of identical titles. `POST /api/spawn` takes `parent_thread_id`; both ends then carry the same
+  two-character family code (`🤖K2` on the child, `🌳K2` on the parent, `🤖K2 🌳P9` on a child that
+  spawns in turn). The code is *derived* from the parent's thread ID rather than allocated, so any
+  component holding the ID recomputes it — a lost database costs the lineage records, never the
+  lineage display. The link is recorded in a new `thread_lineage` table and surfaced in
+  `GET /api/sessions` as `parent_thread_id` / `family` / `children`, so a session managing a fan-out
+  reads its own tree instead of parsing titles, and both threads get a one-line cross-link. The
+  parent is renamed once, not per child: Discord allows two renames per ten minutes, and retagging
+  per spawn would fail partway through a fan-out. Renaming, cross-linking and recording are each
+  best-effort — none of them can fail a spawn that already succeeded. Omitting `parent_thread_id`
+  keeps the previous behaviour. `CCDB_SPAWN_PARENT_MARKER` mirrors `CCDB_SPAWN_THREAD_MARKER`.
+
+- **Agent-spawned threads are recognisable in the channel list** (#691) — a thread created through
+  `POST /api/spawn` (one session starting another) was indistinguishable from a thread a person
+  opened by posting in the channel, and Discord exposes no per-thread colour, badge or icon, so the
+  title is the only surface available. The name the spawning agent chose is now prefixed with a
+  marker (`🤖 Nightly Triage`) rather than replaced, applied where the final name is assembled
+  instead of asked of the caller — an agent that has to remember a convention will eventually
+  forget it, and the one thread that then looks human-authored is exactly the one worth noticing.
+  Marking is idempotent and survives the 100-character limit by trimming the tail, never the head.
+  `CCDB_SPAWN_THREAD_MARKER` changes the marker; an *empty* value disables it and is honoured as an
+  explicit opt-out rather than folded back into the default. `/fork` and session resume are
+  unmarked: they carry their own prefixes and a human asked for them.
+
+- **GPT-6 is selectable, and the Codex model list stops going stale** — `/model`'s Codex suggestions
+  were a hardcoded quartet (`gpt-5.6-sol`, `gpt-5.5`, `gpt-5.5-codex`, `o4-mini`), two of which no
+  longer exist, and the newest generation was not among them: picking GPT-6 meant knowing the slug
+  `gpt-6-astra` by heart and typing it blind. Codex now gets the same treatment Claude got in
+  decision 11, without ccdb calling a vendor: the Codex CLI already fetches its own catalog and
+  writes it to `$CODEX_HOME/models_cache.json`, so `codex_model_choices()` reads that file, drops
+  the entries the CLI marks `hide` (auto-review, reserve capacity), and orders the rest by the
+  catalog's own `priority` — GPT-6 leads the dropdown as soon as the Codex CLI has seen it, with no
+  ccdb release. A host that has never run the Codex CLI, an unreadable catalog, or
+  `CCDB_MODEL_DISCOVERY=0` all degrade to a short static list (now GPT-6-first). Relatedly,
+  `/effort` accepted `minimal/low/medium/high/xhigh` only, so the two levels GPT-5.6 and GPT-6
+  actually added — `max` and `ultra` — were rejected by ccdb before the CLI ever saw them, capping
+  the newest models below their own ceiling; `VALID_CODEX_EFFORTS` is now the union across models
+  (the CLI still rejects a level its selected model does not support, and that error reaches the
+  thread).
+
+- **The deploy-drift check now also catches a bot that simply never restarted** — it answered one
+  question ("is a forgotten `make dev-on` worktree in production?") and returned `OK: main-tree
+  mode` for everything else, which is a guard that reports on the case it was written for and waves
+  the rest through. Main-tree mode has its own silent staleness: the checkout only pulls in
+  `pre-start.sh`, so a bot that has not restarted keeps serving whatever was merged before it
+  booted, while the tree says `main` and every `git pull` keeps succeeding. The check now compares
+  the *running process* against `origin/main` — commits merged after the service's
+  `ActiveEnterTimestamp` are the ones not running — and reports how long the oldest of them has
+  been waiting. Because restarts are batched deliberately (an in-flight session does not survive
+  one), it reports from day one but only exits 1 past `CCDB_STALE_DAYS` (default 3). A machine
+  without systemd, or an unreadable unit, says so instead of silently passing. `CCDB_SERVICE`
+  overrides the unit name.
+
+- **`scripts/check-deploy-drift.sh` (also `make drift`)** — reports when the bot is loading code
+  that is not on `origin/main`. `make dev-on` is the right tool for testing a change against real
+  Discord traffic, but nothing expires it: `pre-start.sh` printed one line at boot and never
+  mentioned it again, so a forgotten dev worktree can keep a side branch in production for days
+  while every merged PR appears to deploy and does not. The check names the worktree and branch,
+  states whether that commit is an ancestor of `origin/main`, counts how many merged commits are
+  therefore not running, and reports how long dev mode has been on. `pre-start.sh` now prints the
+  full report instead of the single line. Exit codes: 0 clean, 1 drift, 2 marker points nowhere.
+
+### Fixed
+
+- **`auto_start=false` seeds are no longer truncated to their first message** — a spawn seed longer
+  than Discord's 2,000-character limit is posted as several messages by `spawn_session`, but
+  `_fetch_seed_context` read only message #1. The Claude session that started on the human's reply
+  therefore woke up with a seed cut off mid-sentence, invisibly, and worse the longer the seed was
+  (a daily news digest lost most of its items). It now reads the leading run of bot messages,
+  stopping at the first human message, bounded by `SEED_CONTEXT_MESSAGE_LIMIT`.
+
+- **`POST /api/spawn` honours `user_id`** — the field was already being sent by callers and silently
+  dropped, so a spawned thread never appeared in the requester's joined list and the miss looked
+  like success. The user is now added as a thread member before the seed message is posted, matching
+  what `/api/ingest` already did for the bot owner. A malformed `user_id` is a caller bug and is
+  rejected with 400; a Discord-side failure to add the member is only a visibility miss and is
+  suppressed, because a spawn that already created the thread and started Claude must not be
+  reported as failed.
+
+- **`.gitignore` covers `.env.*`, not just `.env`** — dated backups of the environment file
+  (`.env.bak-…`) sat untracked-but-not-ignored beside the real one, each holding a live bot token,
+  so a single `git add -A` staged a working credential. GitHub push protection caught one such
+  commit before it left the machine; the ignore rule removes the trap rather than relying on the
+  catch. `.env.example` is re-included explicitly so the template stays tracked.
+
+### Changed
+
+- **Thread-completion recording is opt-in, off by default** — deleting a thread is an everyday,
+  destructive act, and having it silently start a Claude session is a surprise. `/thread-completion
+  on|off` throws the switch and the answer is stored, so it survives a restart; the environment
+  variables now decide only whether the switch exists. The state is re-checked after the debounce
+  window, so turning it off during the wait drops the pending batch. Anything other than a stored
+  "on" — no settings repo, no value, a failed read — is off, because the absence of an answer is
+  not permission.
+
+- **`ThreadCompletionCog`'s prompt is external** (`THREAD_COMPLETION_PROMPT_FILE`) — where a
+  completion record goes is one person's note-taking convention, and this repository is public. The
+  Cog keeps the generic half (batching, session/transcript resolution, the manifest) and reads the
+  instance-specific instructions from a file outside the repo. An unreadable path falls back to a
+  generic prompt rather than dropping the batch.
+
+### Added
+
+- **A test that fails when shipped source names a real person** — `examples/ebibot` is a real
+  instance's configuration, so a docstring explaining why a Cog exists is exactly where personal
+  detail leaks in. The check is narrow on purpose: names, not topics.
+
+### Added
+
+- **`find_transcript(session_id, root)`** in `claude_code_core.transcript_search` — resolves one
+  session's transcript without knowing its working directory. A thread can be deleted; its
+  transcript can't, so anything that wants to say something about a finished conversation after the
+  thread is gone needs this. The id is validated before it reaches a filesystem glob.
+- **`ThreadCompletionCog`** (EbiBot example) — treats "the user deleted the thread" as "that work is
+  finished". Deletions are batched over a quiet period, resolved against the session rows and
+  on-disk transcripts, written to a manifest, and handed to one Claude session that files the
+  records. Threads that never held a session (notification threads) are dropped, and the Cog's own
+  record threads don't re-trigger it. Disabled unless `THREAD_COMPLETION_CHANNEL_ID` is set.
+
+### Fixed
+
+- **EbiBot's own Cogs kept the 24-hour thread window** — `alert_responder` and `job_failure_triage`
+  passed `auto_archive_duration=1440` literally. They now use the shared constant, and the
+  architecture test scans `examples/ebibot/cogs` too.
+
+- **Threads stay in the channel's thread list for a week instead of an hour** — every
+  `create_thread()` call site now asks for Discord's maximum auto-archive window (7 days) via the
+  shared `THREAD_AUTO_ARCHIVE_MINUTES` constant. Chat threads had been created with a 60-minute
+  window, so a conversation dropped out of the sidebar an hour after the last reply and looked
+  deleted; the other call sites silently inherited discord.py's 24-hour default. An architecture
+  test fails when a new call site forgets the keyword.
+
+- **Teams session cards now leave the running state when a turn ends** — teardown removes and
+  unregisters the Stop action, then flushes the final card repaint so the completed or error status
+  is visible immediately instead of leaving a stale working card behind.
+
+## [4.0.0] - 2026-08-11
+
+### Added
+
+- **Microsoft Teams as a production frontend** — the normal launcher can run Discord and Teams in
+  one process with `CCDB_FRONTENDS=discord,teams`. A public receiver verifies Bot Framework
+  activities and enqueues them without holding the bot client secret; a private `ActivityPuller`
+  polls outbound, invokes the same real session runner Discord uses, and posts results back to Teams.
+- **A complete Teams operator guide** — documents Entra registration, Azure Bot, separate queue
+  credentials, public receiver deployment, private host configuration, generated app packaging,
+  tenant consent, staged validation, security boundaries, and troubleshooting.
+- **A unified backend guide** — explains Claude Code, OpenAI Codex, guarded local, and AG-UI choices
+  independently from Discord or Teams.
+- **Curated v4 release notes** — make the product boundary and 3.x compatibility position explicit.
+
+### Changed
+
+- **The public product contract is frontend × backend** — any supported chat frontend can select any
+  supported backend per conversation while sharing persistence and coordination.
+- **Release version is 4.0.0** — the major version communicates the combined multi-frontend product
+  and Teams deployment boundary. Existing package names, commands, settings, data, APIs, default
+  backend, and Discord-only startup remain compatible.
+
+## [3.4.0] - 2026-08-11
+
+### Fixed
+
+- **Teams rejected every genuine inbound request — the token claim is `serviceurl`, not `serviceUrl`** — found by pointing a real Teams tenant at the endpoint for the first time. The signature, issuer, audience and expiry all verified; the request then died on the last check with "token has no serviceUrl claim". Measured on a live Bot Framework token, the claim set is exactly `['aud', 'exp', 'iss', 'nbf', 'serviceurl']` — the camelCase spelling that appears throughout the activity *body* does not exist in the token. **The whole suite was green the entire time**, because the fixtures were built with the same wrong name the implementation read: a test that constructs its own input cannot catch a wrong assumption about that input. Both spellings are accepted now, and `TestTheClaimNameIsLowerCase` pins the real one along with the reason it went unseen.
+
+### Added
+
+- **AG-UI agents as an optional backend** — `AgUiBackend` sends standard `RunAgentInput` requests to a configured HTTP(S) endpoint and maps JSON SSE lifecycle, text, reasoning, and tool events into the relay's existing `StreamEvent` contract. Select it with `/backend agui` or `CCDB_BACKEND=agui`; Discord thread identity is preserved as the AG-UI `threadId`, and images are sent as inline base64 input. The transport is isolated behind the `agui` optional dependency and treats the endpoint as a security boundary: URL credentials and redirects are rejected, bearer tokens are stripped from child CLI environments, response details are bounded, and oversized SSE frames fail closed. Durable HITL resume, state/activity rendering, protobuf, and client tools remain explicit follow-ups. (#605, #607)
+
+- **Teams can run without putting the session host on the internet — `claude_teams.relay`** — Discord was safe in a way that had nothing to do with the code: the transport was outbound only, so the machine running coding-agent sessions never appeared on the internet's attack surface. Teams requires inbound HTTPS, but *where* that inbound lands is a choice. A disposable receiver takes the request, verifies the token, and puts the activity on a queue; the session host **polls that queue outbound** and replies straight to the Bot Connector, also outbound. The host opens no listening port — the Discord shape, restored on a platform that does not offer it. The receiver holds the bot's *public* application id and a write credential for one queue, and **no client secret**, because it never replies: owning it yields the traffic passing through from that moment on, not the ability to speak as the bot, read past conversations, or reach the host. It verifies rather than forwarding, because forwarding would make the queue the trust boundary and put the Bot Connector's keys on the private machine; the envelope records what was checked, so the host's trust is auditable rather than assumed, and carries the **token's** `serviceurl` rather than the body's copy — the distinction that stops a replayed token redirecting the host's authenticated calls, and one that moving machines must not quietly lose.
+- **The failure modes that come with a queue, handled rather than discovered** — acknowledgement is separate from delivery, so a host that dies mid-handler gets the message again instead of losing it (a user's message that vanishes because a process restarted is indistinguishable from a bot that ignored them). That makes duplicates possible, so the puller filters by activity id: running a session twice for one message is worse than the crash that caused the redelivery. A message that fails every time is dropped after a bounded number of deliveries, loudly and with its id, because the alternative blocks every message behind it. An unreadable one is dropped immediately — unreadable now is unreadable next time. And a poll that returns nothing pauses, because a queue with no long poll would otherwise turn the loop into a spin against it.
+- **`python -m claude_teams relay`** — the receiver as a one-command process, plus an Azure Queue Storage client written against the REST API rather than the SDK: four calls, and smaller than the import would be. Queue Storage speaks XML alone among these APIs and is parsed with `defusedxml`, because the document arrives over a network as bytes this process did not write whoever is nominally at the other end. Pop receipts are encoded with `safe=""` — the default leaves `/` alone, and a half-encoded receipt makes the delete silently target something else, so the message comes back forever. See `docs/teams-relay.md`, which states the cost too: a card press is acknowledged before anyone knows whether the prompt is still live, so feedback precision is traded for keeping the host off the internet.
+- **`python -m claude_teams serve` — an endpoint that only echoes** — bringing a Teams app up the first time means checking a chain (Entra app, service principal, Azure Bot, messaging endpoint, manifest, resource-specific consent, token validation) where any broken link produces the same symptom: silence. A process that *only* echoes turns that into one question with one answer, and while it runs, the thing reachable from the internet cannot start a session even if it is compromised. It binds to loopback by default, and its health check identifies nothing about the deployment — a health endpoint is the most-scanned URL on any host, and one that names what it fronts is free reconnaissance.
+- **`TeamsFrontend` — Teams becomes reachable by everything ccdb already does** — the scheduler, the webhook trigger and the REST API all reach a conversation through this seam without knowing which platform it lives on, and it passes `check_frontend`, the same contract `DiscordFrontend` passes. The awkward part is that a Teams address is two things: the conversation id *and* the regional Bot Connector that owns it, and the `frontend_threads` ledger records only the first. So the frontend learns `serviceUrl` from inbound traffic and a deployment can configure its tenant's (`CCDB_TEAMS_SERVICE_URL`) — which is what lets a scheduled follow-up post after a restart. With neither, a conversation resolves to **`None`**: knowing a conversation exists and not where to post to it is not a surface, and inventing a host would send a session's output somewhere nobody is reading. Creating one without a host raises instead, because that is a configuration error rather than an ordinary fact like a deleted thread. A key minted by another frontend resolves to `None` too — one ledger holds every platform's conversations, and handing back a Teams surface for a Discord key would post into the wrong platform entirely. Creating a conversation starts a new reply chain in the channel, which is what keeps Thread=Session intact on a platform whose threads are a property of a message rather than objects of their own. Every surface it hands out shares one prompt registry and one file registry, because the endpoint routes an inbound press to a single place and surfaces with registries of their own would each be unanswerable from it.
+- **Text commands, because Teams does not have slash commands for bots** — Discord registers `/model` with the platform and gets autocomplete, validation and a UI; Teams offers a bot none of that, and its `commandLists` only pre-fills the compose box. So a command arrives as an ordinary message starting with a slash, and `claude_teams/commands.py` is the whole command surface. Only *registered* names count: `/tmp/build.log is missing` is a sentence about a path, and a router that parsed first and dispatched later would silently swallow it — here an unrecognised name is not a command and the text reaches the session unchanged. The caller can also tell "not a command" from "the command produced no output", which are the two things that must not be confused. The manifest's menu is generated from the same registry that dispatches, so a documented command that answers to nothing cannot happen; `build_manifest(config, commands=router.menu())` advertises exactly what a custom router handles.
+- **Mentions are resolved by id and stripped from the prompt** — a channel message addressed to the bot arrives as `<at>Relay</at> fix the parser` with the mention repeated in `entities`. Whether the bot was addressed is decided from the entities and matched on **id**, not display name: names are neither unique nor stable, and a tenant can hold two apps that share one. The markup then comes out of the text before the model sees it — every mention, not only the bot's, because the tags are markup rather than content. Leaving them in makes a session learn to strip `<at>…</at>` itself, badly, and puts a typed `/model opus` somewhere no parser will find it. `raw_text` keeps what Teams delivered and `clean_text` is what the model should see, which is the distinction `InboundMessage` already draws.
+- **Files reach a Teams personal chat, and a channel is told they cannot** — a bot cannot attach a file to a Teams message; what it can do in a personal chat is offer one. `deliver_files` sends a consent card per file, and on accept Teams returns a one-time upload URL to PUT the bytes to. A file that cannot be read or is over the capability's size limit is named and refused rather than dropped or truncated — a truncated file looks complete and is not. In a channel the files are named and the message says the contents were **not** sent, because consent cards are personal-scope only and writing into a channel's folder is a Graph permission this deployment does not hold. The conformance contract is therefore run **twice**: a personal chat passes all 18 checks, a channel fails exactly one, and the test asserts *which* one — an assertion that breaks in both directions, so the gap cannot quietly widen or quietly close.
+- **The upload URL is checked before a byte moves** — the accept invoke carries it, which makes it the one place something off the wire decides where the contents of a local file are written. The host is matched against the domains Microsoft hands upload sessions out on, on the parsed hostname rather than by substring: `https://contoso.sharepoint.com@evil.example.com/` and `https://evil.example.com/?x=.sharepoint.com` both contain the suffix and neither is SharePoint. The invoke is authenticated, so this is defence in depth — and it is the difference between a file transfer and an exfiltration primitive if anything upstream is ever wrong. No `Authorization` header is attached to the upload, because the URL Teams returns is itself the credential and sending this deployment's token to a host it did not choose is the wrong instinct. A transfer is claimed once and bound to its conversation, exactly like a prompt.
+- **A card press in Teams can now answer a prompt — and mostly, it cannot** — `prompt_choice` posts an Adaptive Card (a button per choice for a short list, a dropdown for a long or multi-select one), `prompt_form` posts one input per field, and pressing a control resolves the caller waiting on it. The interesting half is the refusals. An action arrives carrying whatever `data` the client sent: the Bot Connector proves *a Teams user sent it* and proves nothing about the payload matching a card this process posted, so `claude_teams/interactions.py` treats all of it as untrusted. **The conversation must match** — without that, someone who learns a prompt id can approve a tool run in a conversation they are not part of, and the session sees an ordinary approval with nothing odd about it. **The value must have been offered**, or a crafted action returns any string as "what the user chose". **Once only**, so a replay cannot answer the next prompt and a re-pressed Stop cannot interrupt the session after this one. **Only declared keys come back from a form**, because a card submit merges every input into the payload. Every refusal looks identical to the caller — one sentence, no reason — since "wrong conversation" and "expired" are both free information to whoever is probing. Prompt ids are unguessable rather than sequential; the conversation binding is the real control, but an id nobody can enumerate removes the class of attack that starts with guessing one.
+- **Fail-closed, including the case where the prompt never arrived** — a timed-out `prompt_choice` applies `default_on_timeout`, which a tool-permission request sets to the denying choice, and the *same* fallback runs when the card could not be posted at all: a prompt nobody could see must not be safer to ignore than one nobody answered. The shared contract deliberately cannot check this — from outside, denying on timeout and inventing a denial return the same value — so it is proved in `tests/test_teams_prompts.py::TestFailClosed` by withholding the answer, which is the only place it can be.
+- **Stop lives on the card** — Discord re-posts its Stop button to keep it in view because messages scroll away from it; in Teams the card is already the one message being kept current, so the control goes there. Disabling it removes the control *and* stops honouring its id, so a press that lands afterwards cannot interrupt whatever ran next.
+
+### Changed
+
+- **An invoke is answered in the HTTP response body, not with a bare 200** — a card press does not arrive like a message: Teams reads the response body as the answer, so the endpoint's usual `{"status": "ok"}` would show the user an error even though the press worked. Invokes now return an `InvokeResponse`; messages are unchanged. Unknown invoke names (Teams sends several ccdb does not implement, and more over time) are answered successfully rather than with a failure, which would surface as a broken bot.
+- **Teams gets a surface, and the shared contract is pointed at it — `TeamsSurface`** — the same `check_surface` that keeps Discord honest now runs against the Teams class that ships, with the *transport* faked rather than the surface, so what is checked is the real implementation's own decisions. It reports **17 checks passed and 1 failed**, and the failure is pinned by name rather than skipped: a bot cannot attach a file to a Teams channel message, so `deliver_files` names the files and states that their contents were **not** sent. A run that went green while the bytes went nowhere would be exactly the kind of green worth distrusting, so closing the gap is what makes `tests/test_teams_conformance.py` pass and nothing else is. Prompts follow the same rule — they post the question and return `None`, which the contract defines as "unanswered" and which callers already handle by applying their own default; returning a *choice* would leave the caller unable to distinguish "the user allowed it" from "the surface invented allow". No Stop button is rendered either, because an `Action.Execute` nothing routes shows the user an error when they press it.
+- **One card instead of a column of embeds** — Discord posts an embed per tool call and edits it, which is right where editing is cheap and there is no hourly ceiling. Teams allows 1,800 operations per hour per conversation, so porting that design would spend a long session's whole budget on scrollback and then go quiet. A tool starting, the status changing and a tool finishing are three events and one operation here — repaint — and three inside one interval cost one request. The card bounds its own activity list and truncates long text, because Teams refuses a payload over 28 KB and the refusal is invisible from the sending side: the update fails, the card freezes on its last good state, and the session looks stuck.
+- **`UpdatePacer` — coalescing, not throttling** — throttling drops updates and queueing delivers them all late; coalescing delivers the *current* state on the next slot, which is the only state anyone wants to see. It coalesces **per target**, because the card and a streaming reply are different messages and the budget belongs to the conversation: one key would let a card repaint silently swallow a pending stream edit, and the answer would stop growing with nothing to see. The first update is immediate (a budget nobody is competing for should not cost latency), a failed update clears the slot rather than wedging the rest of the session's display, close drops what is pending rather than repainting a card the session has moved past, and waiting targets take turns so a fast-changing card cannot starve a stream.
+- **A conversation now has an address — `ConversationRef`** — Teams has no single API host; each activity names the regional Bot Connector that owns its conversation. Most of what ccdb does is not a reply, so a scheduled task, a webhook and the REST API need that address without an inbound activity to hold. `BotConnector` gained `update_activity`, which is what makes the card and the streaming reply possible at all.
+- **The Teams frontend gets its skeleton — `claude_teams`** — a sibling package to `claude_discord`, not a layer under it: both implement `claude_code_core.frontend`, neither imports the other, and the conformance suite now runs Teams against the numbers the *frontend* ships rather than a copy the test owned. `claude_teams/capabilities.py` is that single column — 80,000 characters per message, no bot reactions, files as links, and 1,800 updates per hour per conversation, which is what actually governs streaming (`min_update_interval` resolves to 2.0 s, so a once-a-second live timer would exhaust a long session's budget partway through). `supports_tables` / `supports_headings` / `supports_inline_images` stay off deliberately: Teams can render all three, this surface does not emit the markup yet, and a capability is a promise about the implementation rather than the platform's brochure. `TeamsConfig` turns the ways a Teams deployment silently receives nothing into named exceptions — a `public_host` carrying a scheme or path is the most common one, because `validDomains` takes a bare host — and derives the Teams app id from the bot's application id, since a regenerated manifest id installs as a *different app* and orphans every existing conversation. `python -m claude_teams manifest` writes the installable package, generated rather than checked in so no tenant's ids live in the repository; it declares `ChannelMessage.Read.Group`, without which a channel-installed bot only sees messages that @mention it, and `webApplicationInfo`, because adding SSO later is a fresh consent prompt for every tenant that already installed the app. Icons are valid placeholder PNGs written without an imaging dependency, so a first run produces something installable.
+- **The inbound endpoint, and the boundary it is** — Discord's transport was outbound-only; Teams needs a public HTTPS URL with coding-agent sessions behind it, so verification is the whole perimeter rather than an authentication nicety. Signature algorithms are pinned by this package instead of read from the token, because the token header is attacker-controlled and the app id — the obvious HMAC key to try — is printed in the manifest. The token's `serviceUrl` claim must match the activity body's: the body says where the reply goes and the reply carries this deployment's credentials, so an unbound genuine token would aim authenticated outbound calls at a host the caller picked. Signing keys refresh when an unknown `kid` appears rather than on a timer — a rotation would otherwise reject every request until the cache expired, an outage that heals itself and is invisible afterwards — and no more often than every five minutes, because that trigger is reachable by anyone. Bodies are size-capped before parsing, every rejection answers a bare 401, and a failure *after* acceptance is logged and answered 200, since Teams redelivers on 5xx and a 500 would have one user message reprocessed on every retry. The endpoint echoes by default, which is what makes the skeleton provable end to end before a surface exists.
+- **A ThreadKey can now be turned back into a place to post — the `frontend_threads` ledger** — every table in the database stores a conversation as a bare integer. For Discord that integer is the thread's snowflake, so "which conversation is 1535820929958027334" answers itself; for a frontend whose ids are strings (Teams uses `19:...@thread.tacv2;messageid=...`) it does not, because the key is a hash and **a hash does not run backwards**. Without this table a deployment could look up a session, learn its key, and have no way to reply to it. The ledger records `(frontend, external_id)` and the parent channel or team, so a conversation can be reopened and a sibling opened beside it. `issue_thread_key()` joins `derive_thread_key()` and answers the question a frontend actually has — not "what does this id hash to" but "what key may I *use*". The difference is collisions: `ThreadKey` is the primary key of the sessions table, so two conversations sharing one does not raise, it lets the second session quietly overwrite the first and leaves a thread showing somebody else's history. Colliding keys are re-derived rather than incremented, because a linear walk marches a whole cluster of collided keys through the same occupied stretch; an exhausted probe budget raises instead of reusing. Discord ids are passed through verbatim rather than hashed, since the snowflake *is* the id every Discord API call needs. `DiscordFrontend` records every conversation it creates or resolves — Discord does not need the ledger to work, but a table that knows half a deployment's conversations answers "where does this key live" wrongly rather than not at all — and a ledger write that fails is logged and ignored, because bookkeeping must not be able to kill a session. Existing deployments are adopted on startup by an idempotent backfill, so months of existing threads are not left unaddressable. Fully Zero-Config: `DiscordFrontend(ledger=...)` defaults to `None` and behaves exactly as before without one.
+
+### Changed
+
+- **A scheduled run reaches its conversation through the frontend, not through Discord — `SessionFrontend` and `DiscordFrontend`** — `ConversationSurface` covered one thread, but the object that *hands threads out* was still `bot.get_channel(...)`, open-coded at every call site. Each site re-decided the same three things — fall back to `fetch_channel` on a cold cache, accept or reject a non-thread channel, and what a missing thread means — and they did not all decide the same way. `claude_discord/frontend.py` gathers them: `resolve_surface(thread_key)` finds an existing conversation and answers **`None`, never an exception**, for one that is gone, because a deleted thread is ordinary and must not take an unattended scheduler loop down with it; `create_surface(parent_id, title)` opens a new one and *is* loud about an unknown channel, which is a configuration error rather than a fact of life. `SchedulerCog` now uses it for both its follow-up and new-conversation paths, so scheduled tasks are the first feature that would work on a second frontend unchanged. A new `check_frontend()` contract — the companion to `check_surface()` — pins the obligations that types cannot: a conversation resolves to the key it was created with, two conversations never share a key, and every surface reports the frontend that minted it. Both `DiscordFrontend` and the new `MemoryFrontend` reference implementation pass it, and a Teams frontend will have to. `BridgeComponents.frontend` exposes the seam so a custom Cog can stop hard-coding Discord into its own logic, and `SchedulerCog(frontend=...)` defaults to Discord so no existing deployment changes.
+- **`setup_bridge` no longer opens the database in the middle of wiring cogs** — the ten repositories every deployment needs are built by `build_session_stores()` in the new `claude_discord/stores.py`, which knows nothing about threads or channels. The two jobs were unrelated, and a Teams deployment needs the stores with none of the Discord wiring around them. Behaviour is unchanged; the one shared SQLite path is now visible in one place, which is also where two deployments would silently start sharing sessions.
+- One visible difference: a scheduled task's starter message in the channel now reads `🔄 [Scheduled] <name>` in plain text and matches the thread's own title, where it previously used bold and code formatting that the title did not share.
+
+### Changed
+
+- **Approving a tool, a plan or an MCP elicitation now goes through the conversation
+  surface — `claude_code_core/approvals.py`** — streaming, tool activity and
+  attachments already reached the user through the frontend-neutral protocol, but the
+  three moments where a session *stops and waits for a person* still built Discord
+  views directly. A second frontend would therefore have produced a session that
+  streams text perfectly and then dies at the first permission request, which is the
+  first thing any real session hits. Permission, plan approval and elicitation are now
+  expressed as `ChoicePrompt` / `FormPrompt` / `prompt_url` — the vocabulary a surface
+  already has to implement — so a Teams or Slack surface inherits all three without
+  writing any approval logic. Each request's prompt builder and its answer reader live
+  side by side in one module, because the choice values a prompt offers are the same
+  strings the payload reader matches on; split apart, renaming one would silently turn
+  every approval into a denial. The readers treat anything they do not recognise as a
+  refusal, so that failure mode fails closed rather than open. **A prompt that cannot
+  be posted no longer hangs the session**: previously, if the message carrying the
+  buttons failed to send, discord.py's view timer never started, nothing ever timed
+  out, and the CLI waited forever on an approval nobody could see — now the surface's
+  own clock applies and an unpostable request is injected as denied. Prompts are also
+  dispatched off the event loop, so a two-minute approval no longer holds up every
+  event queued behind it. `EventProcessor` gains `wait_for_prompts()` and
+  `cancel_prompts()` for callers that need to settle or abandon outstanding questions;
+  `finalize()` deliberately does neither, leaving an approval the user is mid-way
+  through answering free to complete. Discord's rendering is unchanged apart from
+  URL-mode elicitation, where the link and the "did it work?" confirmation are now two
+  messages instead of one, so that a surface without link buttons can still show a
+  usable URL. The superseded `permission_view.py`, `plan_view.py` and
+  `elicitation_view.py` are removed; they had no callers left and no public exports.
+  AskUserQuestion is untouched and still uses its own persisted view.
+
+- **The project is now called Ebi Agent Chat Relay** — phase 1 of the rename in
+  [ADR-0001](docs/adr/0001-adopt-ebi-agent-chat-relay.md), covering brand text only. The
+  README and the distribution description carry the new name with a "formerly" note; the
+  repository, the `claude-code-discord-bridge` distribution, the `ccdb` command, every
+  `CCDB_*` variable, all REST routes, persisted data paths and Python import names are
+  **unchanged**, and none of them may change without a separate accepted ADR and a major
+  release. Existing installations keep starting exactly as before, and `ccdb` stays the
+  short name used throughout the documentation. Translated READMEs are refreshed by the
+  existing translation workflow on the next release.
+
+### Fixed
+
+- Report persisted sessions without an in-flight turn as `history` instead of `idle`,
+  avoiding the false impression that saved conversations are agents waiting for work
+  or user input. `running` remains reserved for turns currently in flight.
+- Make Teams sync retries remove obsolete pending-attachment warnings after a client corrects a message's attachment inventory.
+
+### Added
+
+- Add an opt-in owner PR completion gate (`CCDB_PR_COMPLETION_OWNER`) that resumes a
+  Discord session once when its `session/<thread_id>` branch still has a non-draft
+  open PR. The continuation requires the agent to wait for checks, fix in-scope
+  failures, merge, and verify post-merge consumers instead of treating PR creation as
+  completion. GitHub lookup failures remain visible but fail open. (#577)
+
+- **Synced Teams threads are filed one folder per company — `thread.org` + `orgs.json`** — every mirrored thread landed directly under the sync root, so a vault that had run for a few months was a flat list of hundreds of folders from every customer at once, with no way to see whose conversation was whose. A sync request may now carry `thread.org` (a free-text company label) and threads are written to `{root}/{company}/{title}--{root_mid}/`. The label is **not** part of the identity — the primary key is still `{team}/{root_mid}` — so relabelling a company moves nothing, re-uploads nothing, and costs nothing. Authority lives in `orgs.json` at the sync root, a hand-editable `team GUID → company` map that **wins over whatever a client sends**: correcting a mistyped name there sticks instead of being overwritten on the next sync. A team the file does not know yet is recorded from the client's label on first use, so labelling one conversation files every later thread of that company automatically. `find_thread_dir` now looks at the root *and* one level in, which is what makes filing an existing vault by hand a safe migration: a thread that has been dragged into a company folder is still recognised, instead of being re-created empty and re-uploading its whole history silently. A thread whose company is unknown stays at the root — no invented `_unfiled` bucket for deployments that never label anything — and an existing folder is never moved on its own, because a folder that walks around the vault would break every wikilink pointing into it. `thread.json` and the generated `README.md` both record the company.
+- **An upstream Teams thread can now be mirrored into a folder as raw files, one per message — `POST /api/teams/sync/plan` and `/api/teams/sync/push`** — the running-summary linkage (`/api/ingest/summary`) asked a client to remember how far it had got (a `marker`) and kept only a distilled summary on this side, so the sync state lived in two places and the raw messages lived in neither. Nothing could tell the difference between "there was nothing new" and "the new part failed to travel"; an attachment that never arrived left no trace to notice, and a wrong answer could not be checked against what was actually said, because what was actually said had not been kept. These two endpoints replace that with a have/want negotiation in which **the client keeps no state at all**. `plan` receives the message ids and content hashes the client can see (no bodies — a 1000-reply thread costs tens of KB) and answers with the subset this side is missing or holds at a different hash; `push` stores exactly that subset. Because a *changed* hash and a *never-seen* id are the same question, following an upstream edit is not a separate feature — it is the mechanism, and the superseded version is kept under `_history/` rather than overwritten. Each message becomes `messages/{mid}.md` with YAML frontmatter (author, timestamp, `prev`, hash, `edited`, `deleted`), its attachments land in `messages/{mid}/`, and order is recorded in an append-only `chain.jsonl`; `next` is deliberately **not** stored, since writing it would mean rewriting an existing file on every new reply. The identity is Teams' own: `mid` (the Unix-ms message id, `chatMessage.id` in Microsoft Graph) scoped by the team GUID and the thread's root mid — so the same folders remain valid if a client ever switches from DOM scraping to Graph. The vault directory is the single source of truth: `plan` is answered by reading the files, so deleting a message file makes it come back on the next sync, an interrupted push simply completes on the next one, and pressing the button twice is a no-op. An attachment that could not be stored is never reported as success — it is listed in `thread.json`, in the folder's generated `README.md`, in the push response, and it keeps appearing in `want_attachments` until its bytes actually arrive. Threads live under `{working_dir}/teams` by default, beside the `ingest/` tree (`CCDB_TEAMS_VAULT_ROOT` or `teams_vault_root=` to keep them somewhere else, such as a notes vault); both routes are gated by the existing ingest bearer token, are exposed on the external listener alongside `/api/ingest`, spawn nothing, and re-check path containment at every write. Zero-Config and additive: `/api/ingest` and the summary routes are untouched, so an existing client keeps working unchanged.
+
 ## [3.3.0] - 2026-07-27
 
 ### Fixed
 - **An ingest can no longer lose an attachment quietly — `attachments_manifest` and the delivery verdict** — `POST /api/ingest` saved whatever bytes it was handed and reported `attachments_saved: N`; nothing anywhere knew what `N` *should* have been. A client that dropped a file on the way (a download that 403'd, a size cap, a screenshot captured before it finished loading) produced an ingest **indistinguishable from a complete one**, and the session answered confidently on evidence it never had. For an exported Teams thread the missing file is routinely the one the whole export was for — the log or screenshot on the newest message. ccdb cannot recover bytes a client never sent, so the fix is to make their absence impossible to miss. Clients may now send `attachments_manifest`: one entry per attachment found upstream (`name`, optional `sha256`/`size`/`kind`/`url`/`message`) with a status of `embedded` (bytes are in this request), `linked`, `skipped` or `failed`. ccdb reconciles that declaration against the files that actually landed after zip expansion (`ext/ingest_manifest.py`) — matching on **sha256 first**, then exact name, then the `4_image.png` index-prefix a bundler adds for collisions, then size — and consumes each file at most once, so two attachments named `image.png` can no longer both "match" the single file that arrived. Any shortfall is reported four ways: a ⚠️ block at the **top** of the session prompt naming each missing file and instructing the session not to invent its contents (with a separate callout when the loss is on the newest message), an `ATTACHMENTS-REPORT.md` ledger written beside the files, an `attachments` verdict in the 201 response so the *sending* client — the only party that can re-send — learns of the gap at send time, and a `WARNING` in the log. Set `CCDB_INGEST_REQUIRE_COMPLETE=1` (or `ingest_require_complete=True`) to refuse a lossy ingest with `409` instead of starting a session on partial evidence. Fully Zero-Config and backward compatible: a client that sends no manifest behaves exactly as before and is reported as `verified: false` — never as verified-complete.
 - **Two attachments with the same filename no longer overwrite each other** — Teams names every pasted screenshot `image.png`, and both the per-request save path and the zip expander wrote colliding names straight to the same path. One file ended up on disk where two were sent, while `attachments_saved` still said 2 — a loss that looked exactly like success. Colliding names are now disambiguated (`image.png`, `image_2.png`), in the request payload and inside a bundled zip alike.
 - **The prompt now groups attachments by the message they came from** — the flat path list gave a session no way to tell which file belonged to the message being replied to, so the newest message's evidence was just one line among 70. When a manifest supplies `message`, paths are grouped under their upstream message and the newest group is marked as the one to read first. Without a manifest the flat list is unchanged.
-
 - **An @mention is answered where it was written — no thread, no lingering session** — the inverted listening policy routed mentions into the existing *new conversation* flow, so a mention in an unlisted channel opened a **thread** and started a session there; worse, that thread was bot-owned, and bot-owned threads were exempt from the mention gate, so everything said in it afterwards kept waking Claude. Both halves are gone. A mention is now handled by its own path (`_handle_mention`): ccdb reads the recent history of that **exact channel or thread**, answers **in place**, and goes quiet until the next mention. A mention in a channel is answered in the channel; a mention in a thread is answered in that thread; nothing creates a thread. The `Thread.owner_id` exemption is removed entirely — outside the no-mention channels *every* run is summoned by name, including in threads ccdb opened itself, because people keep talking to each other in those threads and a run nobody asked for is noise. Threads under a listed no-mention channel are unaffected (that is where the session flow lives). An existing session for that channel/thread is still resumed, so a follow-up mention continues the same work. `build_thread_transcript` is now `build_recent_transcript` and takes any channel, since the mention may land in a channel rather than a thread.
 
 ### Changed
@@ -400,18 +661,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI pipeline: Python 3.10/3.11/3.12, ruff, pytest
 - Branch protection and PR workflow
 
-[Unreleased]: https://github.com/ebibibi/claude-code-discord-bridge/compare/v2.1.0...HEAD
-[2.1.0]: https://github.com/ebibibi/claude-code-discord-bridge/compare/v2.0.5...v2.1.0
-[2.0.0]: https://github.com/ebibibi/claude-code-discord-bridge/compare/v1.9.0...v2.0.5
-[1.9.0]: https://github.com/ebibibi/claude-code-discord-bridge/compare/v1.8.0...v1.9.0
-[1.8.0]: https://github.com/ebibibi/claude-code-discord-bridge/compare/v1.7.5...v1.8.0
-[1.7.5]: https://github.com/ebibibi/claude-code-discord-bridge/compare/v1.6.0...v1.7.5
-[1.6.0]: https://github.com/ebibibi/claude-code-discord-bridge/compare/v1.5.0...v1.6.0
-[1.5.0]: https://github.com/ebibibi/claude-code-discord-bridge/compare/v1.4.1...v1.5.0
-[1.4.1]: https://github.com/ebibibi/claude-code-discord-bridge/compare/v1.4.0...v1.4.1
-[1.4.0]: https://github.com/ebibibi/claude-code-discord-bridge/compare/v1.3.0...v1.4.0
-[1.3.0]: https://github.com/ebibibi/claude-code-discord-bridge/compare/v1.2.0...v1.3.0
-[1.2.0]: https://github.com/ebibibi/claude-code-discord-bridge/compare/v1.1.0...v1.2.0
-[1.1.0]: https://github.com/ebibibi/claude-code-discord-bridge/compare/v1.0.0...v1.1.0
-[1.0.0]: https://github.com/ebibibi/claude-code-discord-bridge/compare/v0.1.0...v1.0.0
-[0.1.0]: https://github.com/ebibibi/claude-code-discord-bridge/releases/tag/v0.1.0
+[Unreleased]: https://github.com/ebibibi/ebi-agent-chat-relay/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/ebibibi/ebi-agent-chat-relay/compare/v2.0.5...v2.1.0
+[2.0.0]: https://github.com/ebibibi/ebi-agent-chat-relay/compare/v1.9.0...v2.0.5
+[1.9.0]: https://github.com/ebibibi/ebi-agent-chat-relay/compare/v1.8.0...v1.9.0
+[1.8.0]: https://github.com/ebibibi/ebi-agent-chat-relay/compare/v1.7.5...v1.8.0
+[1.7.5]: https://github.com/ebibibi/ebi-agent-chat-relay/compare/v1.6.0...v1.7.5
+[1.6.0]: https://github.com/ebibibi/ebi-agent-chat-relay/compare/v1.5.0...v1.6.0
+[1.5.0]: https://github.com/ebibibi/ebi-agent-chat-relay/compare/v1.4.1...v1.5.0
+[1.4.1]: https://github.com/ebibibi/ebi-agent-chat-relay/compare/v1.4.0...v1.4.1
+[1.4.0]: https://github.com/ebibibi/ebi-agent-chat-relay/compare/v1.3.0...v1.4.0
+[1.3.0]: https://github.com/ebibibi/ebi-agent-chat-relay/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/ebibibi/ebi-agent-chat-relay/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/ebibibi/ebi-agent-chat-relay/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/ebibibi/ebi-agent-chat-relay/compare/v0.1.0...v1.0.0
+[0.1.0]: https://github.com/ebibibi/ebi-agent-chat-relay/releases/tag/v0.1.0

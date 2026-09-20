@@ -21,6 +21,7 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from .api_provider import detect_api_provider
+from .child_env import STRIPPED_ENV_KEYS, strip_transport_credentials
 from .parser import parse_line
 from .types import ImageData, MessageType, StreamEvent
 
@@ -154,7 +155,7 @@ class ClaudeRunner:
         try:
             async for event in self._read_stream():
                 yield event
-        except (TimeoutError, asyncio.TimeoutError):  # noqa: UP041 — asyncio.TimeoutError != builtins.TimeoutError on Python 3.10
+        except TimeoutError:
             logger.warning("Claude CLI timed out after %ds", self.timeout_seconds)
             yield StreamEvent(
                 raw={},
@@ -259,7 +260,7 @@ class ClaudeRunner:
                 self._process.send_signal(signal.SIGINT)
             try:
                 await asyncio.wait_for(self._process.wait(), timeout=10)
-            except (TimeoutError, asyncio.TimeoutError):  # noqa: UP041 — asyncio.TimeoutError != builtins.TimeoutError on Python 3.10
+            except TimeoutError:
                 await self.kill()
 
     async def kill(self) -> None:
@@ -268,7 +269,7 @@ class ClaudeRunner:
             self._process.terminate()
             try:
                 await asyncio.wait_for(self._process.wait(), timeout=5)
-            except (TimeoutError, asyncio.TimeoutError):  # noqa: UP041 — asyncio.TimeoutError != builtins.TimeoutError on Python 3.10
+            except TimeoutError:
                 self._process.kill()
                 await self._process.wait()
 
@@ -326,14 +327,7 @@ class ClaudeRunner:
 
         return args
 
-    _STRIPPED_ENV_KEYS = frozenset(
-        {
-            "CLAUDECODE",
-            "DISCORD_BOT_TOKEN",
-            "DISCORD_TOKEN",
-            "API_SECRET_KEY",
-        }
-    )
+    _STRIPPED_ENV_KEYS = STRIPPED_ENV_KEYS
 
     def _build_env(self) -> dict[str, str]:
         """Build environment variables for the subprocess.
@@ -352,6 +346,7 @@ class ClaudeRunner:
                         env[key] = value
             except OSError:
                 logger.debug("CLI env overlay file not found: %s", overlay_path)
+        env = strip_transport_credentials(env)
         if self.api_port is not None:
             env["CCDB_API_URL"] = f"http://127.0.0.1:{self.api_port}"
         if self.api_secret is not None:
@@ -376,7 +371,11 @@ class ClaudeRunner:
 
         line_count = 0
         while True:
-            line = await self._process.stdout.readline()
+            # Each line is progress, not a fresh total runtime budget. Long
+            # active sessions may run indefinitely; silent streams cannot.
+            line = await asyncio.wait_for(
+                self._process.stdout.readline(), timeout=self.timeout_seconds or None
+            )
             if not line:
                 logger.info("Claude CLI stdout EOF after %d lines", line_count)
                 break

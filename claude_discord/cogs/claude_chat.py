@@ -29,6 +29,7 @@ from ..backend_settings import BackendSettings, session_is_resumable
 from ..claude.rewind import find_session_jsonl, parse_user_turns
 from ..claude.types import ImageData
 from ..concurrency import SessionRegistry
+from ..cross_backend_handoff import ConversationHistoryReader, build_handoff_prompt
 from ..database.ask_repo import PendingAskRepository
 from ..database.lounge_repo import LoungeRepository
 from ..database.repository import SessionRecord, SessionRepository
@@ -42,6 +43,13 @@ from ..discord_ui.thread_context import DEFAULT_DAYS, build_recent_transcript
 from ..discord_ui.thread_dashboard import ThreadState, ThreadStatusDashboard
 from ..discord_ui.thread_renamer import suggest_title
 from ..discord_ui.views import RewindSelectView, StopView
+from ..thread_marker import (
+    MAX_THREAD_NAME_LENGTH,
+    family_code,
+    mark_parent_thread_name,
+    mark_spawned_thread_name,
+)
+from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 from ._run_helper import run_claude_with_config
 from .prompt_builder import build_prompt_and_images, wants_file_attachment
 from .run_config import RunConfig
@@ -50,6 +58,12 @@ if TYPE_CHECKING:
     from ..bot import ClaudeDiscordBot
 
 logger = logging.getLogger(__name__)
+
+# How many messages to scan when recovering an ``auto_start=false`` seed.
+# A seed is chunked at Discord's per-message limit, so this bounds the seed at
+# roughly 40 x 2,000 characters — far more than any real prompt, while still
+# refusing to walk an entire thread's history on a malformed one.
+SEED_CONTEXT_MESSAGE_LIMIT = 40
 
 # ---------------------------------------------------------------------------
 # /help command metadata
@@ -78,6 +92,8 @@ _HELP_CATEGORY: dict[str, str | None] = {
     "model": "🤖 Model",
     "backend": "🤖 Model",
     "engine-status": "🤖 Model",
+    "ollama": "🤖 Model",  # manage the runtime behind the `local` backend
+    "ask": "🤖 Model",  # one anonymized question to an external model
     "effort": "⚡ Effort",
     "tools-show": "🔧 Advanced",
     "tools-set": "🔧 Advanced",
@@ -118,6 +134,7 @@ class ClaudeChatCog(commands.Cog):
         thread_context_days: int = DEFAULT_DAYS,
         factory: BackendFactory | None = None,
         backend_settings: BackendSettings | None = None,
+        conversation_history: ConversationHistoryReader | None = None,
     ) -> None:
         self.bot = bot
         self.repo = repo
@@ -127,6 +144,7 @@ class ClaudeChatCog(commands.Cog):
         # When either is None, we fall back to self.runner.clone() (legacy).
         self._factory = factory
         self._backend_settings = backend_settings
+        self._conversation_history = conversation_history or ConversationHistoryReader()
         self._max_concurrent = max_concurrent
         self._allowed_user_ids = allowed_user_ids
         # When True, skip channel-ID filtering and accept all guild channels.
@@ -734,18 +752,26 @@ class ClaudeChatCog(commands.Cog):
             isinstance(message.channel, discord.TextChannel)
             and message.channel.id in self._inline_reply_channel_ids
         ):
-            # Inline-reply mode: respond directly in the channel without creating a thread.
+            # Inline-reply mode: respond directly in the channel without creating
+            # a thread. Every message in such a channel lands here, so resume the
+            # session stored against the channel id — otherwise the conversation
+            # would restart cold on each message, which threads never do (see
+            # _handle_thread_reply). The channel is the conversation; /clear ends it.
+            record = await self.repo.get(message.channel.id)
             await self._run_claude(
                 message,
                 message.channel,
                 prompt,
-                session_id=None,
+                session_id=record.session_id if record else None,
                 images=images,
                 chat_only=chat_only,
             )
         else:
             thread_name = message.content[:100] if message.content else "Claude Chat"
-            thread = await message.create_thread(name=thread_name)
+            thread = await message.create_thread(
+                name=thread_name,
+                auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES,
+            )
             if self._auto_rename_threads and message.content:
                 asyncio.create_task(self._background_rename_thread(thread, message.content))
             await self._run_claude(
@@ -779,6 +805,42 @@ class ClaudeChatCog(commands.Cog):
             except Exception:
                 logger.warning("Failed to rename thread %d to %r", thread.id, title, exc_info=True)
 
+    async def _link_to_parent_thread(
+        self,
+        thread: discord.Thread,
+        parent_thread_id: int,
+    ) -> None:
+        """Tag the spawning thread and cross-link the two, best-effort.
+
+        Three separate favours, each suppressed on its own: tagging the parent,
+        telling the parent what it started, and telling the child where it came
+        from. None of them is worth failing a spawn that already succeeded, and
+        a parent thread that was archived, deleted or renamed past the limit
+        must not take the fan-out down with it.
+
+        The rename is skipped when the tag is already there, which keeps a
+        ten-child fan-out at one rename rather than ten — Discord allows a
+        thread two renames per ten minutes, so retagging per spawn would start
+        failing partway through and leave the parent untagged exactly when it
+        has the most children to account for.
+        """
+        parent = self.bot.get_channel(parent_thread_id)
+        if parent is None:
+            with contextlib.suppress(Exception):
+                parent = await self.bot.fetch_channel(parent_thread_id)
+        if not isinstance(parent, discord.Thread):
+            return
+
+        tagged = mark_parent_thread_name(parent.name, parent_thread_id)
+        if tagged != parent.name:
+            with contextlib.suppress(Exception):
+                await parent.edit(name=tagged)
+        code = family_code(parent_thread_id)
+        with contextlib.suppress(Exception):
+            await parent.send(f"-# \u2937 spawned {thread.mention}")
+        with contextlib.suppress(Exception):
+            await thread.send(f"-# \u21b3 {code} \u2014 spawned by {parent.mention}")
+
     async def spawn_session(
         self,
         channel: discord.TextChannel,
@@ -789,6 +851,9 @@ class ClaudeChatCog(commands.Cog):
         auto_start: bool = True,
         result_sink: Callable[[str | None, str | None], Awaitable[None]] | None = None,
         attachments: list[tuple[str, bytes]] | None = None,
+        invite_user_id: int | None = None,
+        agent_spawned: bool = False,
+        parent_thread_id: int | None = None,
     ) -> discord.Thread:
         """Create a new thread and optionally start a Claude Code session.
 
@@ -822,16 +887,45 @@ class ClaudeChatCog(commands.Cog):
                         seed prompt. Lets a programmatic caller (e.g. a Forgejo
                         Issue watcher via ``/api/spawn``) surface the original
                         attachments so they're viewable in the thread.
+            invite_user_id: Optional Discord user to add as a thread member, so
+                        a thread nobody was watching still lands in their joined
+                        list. Best-effort: a failure here is a visibility miss,
+                        never a reason to fail a spawn that already succeeded.
+            agent_spawned: Whether this thread was started by an agent rather
+                        than by a person writing in Discord. When ``True`` the
+                        title is prefixed with the spawn marker so the thread is
+                        recognisable in the channel list without opening it.
+                        ``/fork`` and session resume leave this ``False``: they
+                        carry their own prefixes and a human asked for them.
+            parent_thread_id: The thread that asked for this spawn, when the
+                        caller knows it. Both titles then carry that thread's
+                        family code (``🤖K2`` here, ``🌳K2`` there), which is
+                        what turns several concurrent fan-outs from one pile of
+                        markers into readable trees. Best-effort in every
+                        respect: an unreachable or unrenameable parent costs the
+                        cross-link, never the spawn.
 
         Returns:
             The newly created :class:`discord.Thread`.
         """
-        name = (thread_name or prompt)[:100]
+        raw_name = thread_name or prompt
+        name = (
+            mark_spawned_thread_name(raw_name, parent_thread_id=parent_thread_id)
+            if agent_spawned
+            else raw_name[:MAX_THREAD_NAME_LENGTH]
+        )
         thread = await channel.create_thread(
             name=name,
             type=discord.ChannelType.public_thread,
-            auto_archive_duration=60,
+            auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES,
         )
+        # Added before the seed message so the requester sees the thread from its
+        # first line, not after Claude has already been talking to itself.
+        if invite_user_id:
+            with contextlib.suppress(Exception):
+                await thread.add_user(discord.Object(id=invite_user_id))
+        if agent_spawned and parent_thread_id:
+            await self._link_to_parent_thread(thread, parent_thread_id)
         # Post the prompt so StatusManager has a Message to add reactions to.
         # Long prompts (e.g. an ingested Teams thread) exceed Discord's
         # per-message limit, so chunk the seed for display. The full prompt is
@@ -1151,9 +1245,55 @@ class ClaudeChatCog(commands.Cog):
             await thread.send(
                 f"-# 🔀 Backend changed (`{record.backend}` → `{current}`). "
                 f"`{current}` cannot resume a `{record.backend}` session, "
-                "so this thread starts a fresh one."
+                "so its file-backed conversation history will be carried into a fresh session."
             )
         return None
+
+    async def _prepare_cross_backend_handoff(
+        self,
+        thread: discord.Thread | discord.TextChannel,
+        prompt: str,
+        session_id: str | None,
+    ) -> tuple[str | None, str]:
+        """Replace an incompatible native resume with a text transcript handoff."""
+        if self._backend_settings is None:
+            return session_id, prompt
+
+        record = await self.repo.get(thread.id)
+        if record is None or not record.backend or not record.session_id:
+            return session_id, prompt
+        current = await self._backend_settings.current_backend(thread.id)
+        if session_is_resumable(record.backend, current):
+            return session_id, prompt
+
+        transcript = await asyncio.to_thread(
+            self._conversation_history.read,
+            record.backend,
+            record.session_id,
+        )
+        if not transcript:
+            logger.warning(
+                "No file-backed transcript found for cross-backend handoff: "
+                "thread=%d backend=%s session=%s",
+                thread.id,
+                record.backend,
+                record.session_id,
+            )
+            return None, prompt
+
+        logger.info(
+            "Injecting cross-backend transcript: thread=%d %s->%s chars=%d",
+            thread.id,
+            record.backend,
+            current,
+            len(transcript),
+        )
+        return None, build_handoff_prompt(
+            source_backend=record.backend,
+            target_backend=current,
+            transcript=transcript,
+            current_prompt=prompt,
+        )
 
     async def _build_prompt_and_images(
         self, message: discord.Message
@@ -1172,23 +1312,29 @@ class ClaudeChatCog(commands.Cog):
 
     @staticmethod
     async def _fetch_seed_context(thread: discord.Thread) -> str | None:
-        """Return the text of the first (seed) message in a thread, if posted by the bot.
+        """Return the seed text of a thread, if it was posted by the bot.
 
         Used to recover context from ``/api/spawn`` threads with ``auto_start=false``,
         where the bot posted a seed message but did not start Claude.  Returns
-        ``None`` if the seed message cannot be retrieved or was not from a bot.
+        ``None`` if the seed cannot be retrieved or was not from a bot.
+
+        Reads the *leading run* of bot messages, not just the first one: a prompt
+        longer than Discord's per-message limit is chunked by ``spawn_session``, so
+        taking only message #1 hands Claude a seed cut off mid-sentence — silently,
+        and worse the longer the seed is. The run stops at the first human message,
+        which is the reply that triggered this lookup.
         """
         try:
-            # oldest_first via after=None with limit=1 is the most efficient
-            # way to get the first message in a thread.
-            first_messages = [msg async for msg in thread.history(limit=1, oldest_first=True)]
-            if not first_messages:
-                return None
-            seed = first_messages[0]
-            # Only include bot-authored seed messages (from /api/spawn).
-            if not seed.author.bot:
-                return None
-            return seed.content or None
+            chunks: list[str] = []
+            async for message in thread.history(
+                limit=SEED_CONTEXT_MESSAGE_LIMIT, oldest_first=True
+            ):
+                # Only include bot-authored seed messages (from /api/spawn).
+                if not message.author.bot:
+                    break
+                if message.content:
+                    chunks.append(message.content)
+            return "\n".join(chunks) or None
         except Exception:
             logger.debug("Failed to fetch seed message for thread %d", thread.id, exc_info=True)
             return None
@@ -1260,6 +1406,11 @@ class ClaudeChatCog(commands.Cog):
         thread. The subprocess itself runs *outside* the lock so a later message
         can still interrupt this run.
         """
+        session_id, prompt = await self._prepare_cross_backend_handoff(
+            thread,
+            prompt,
+            session_id,
+        )
         dashboard = self._get_dashboard()
         description = prompt[:100].replace("\n", " ")
 
@@ -1312,6 +1463,11 @@ class ClaudeChatCog(commands.Cog):
                 working_dir_override=working_dir_override,
                 effort_override=effort_override,
             )
+            backend_for_thread = (
+                await self._backend_settings.current_backend(thread.id)
+                if self._backend_settings is not None
+                else "claude"
+            )
             # Register as the sole active run BEFORE releasing the lock. Track
             # the task too so a later eviction can await our cleanup.
             self._active_runners[thread.id] = runner
@@ -1353,7 +1509,11 @@ class ClaudeChatCog(commands.Cog):
                     result_sink=result_sink,
                     backend_settings=self._backend_settings,
                     codex_command=(
-                        self._factory.codex_command if self._factory is not None else "codex"
+                        self._factory.copilot_command
+                        if self._factory is not None and backend_for_thread == "copilot"
+                        else self._factory.codex_command
+                        if self._factory is not None
+                        else "codex"
                     ),
                 )
             )

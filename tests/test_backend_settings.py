@@ -38,6 +38,17 @@ class TestResolution:
         assert await s.current_model("claude") == "sonnet"
         assert await s.current_model("codex") is None
 
+    async def test_copilot_shares_codex_env_model_fallback(self) -> None:
+        repo, _ = await _new_repo()
+        s = BackendSettings(
+            repo,
+            env_backend="copilot",
+            env_model_for_claude="sonnet",
+            env_model_for_codex="gpt-5.6-sol",
+        )
+        assert await s.current_backend() == "copilot"
+        assert await s.current_model("copilot") == "gpt-5.6-sol"
+
     async def test_global_set_overrides_env(self) -> None:
         repo, _ = await _new_repo()
         s = BackendSettings(

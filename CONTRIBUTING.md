@@ -22,7 +22,7 @@ main (always releasable)
    ```
 3. **Make your changes** — write code, add tests
 4. **Push** your branch and **open a PR** against `main`
-5. **CI runs automatically** — tests + lint on Python 3.10/3.11/3.12, plus CodeQL security scanning
+5. **CI runs automatically** — tests + lint on Python 3.12/3.13, plus CodeQL security scanning
 6. Once CI passes and the PR is reviewed, it gets **merged to main**
 
 ### Branch Naming
@@ -35,8 +35,8 @@ main (always releasable)
 ## Development Setup
 
 ```bash
-git clone https://github.com/ebibibi/claude-code-discord-bridge.git
-cd claude-code-discord-bridge
+git clone https://github.com/ebibibi/ebi-agent-chat-relay.git
+cd ebi-agent-chat-relay
 uv sync --dev
 make setup   # register git hooks (one-time per clone)
 ```
@@ -56,17 +56,117 @@ uv run pytest tests/ -v --cov=claude_discord
 
 All tests must pass before submitting a PR.
 
+## Testing Against a Live Bot (dev worktree mode)
+
+Unit tests do not cover everything a Discord surface does. If you run a bot from this
+repository, you can point it at a worktree so it loads your branch instead of the main
+tree — no reinstall, no editable-install juggling:
+
+```bash
+git worktree add ../wt-my-feature -b feature/my-feature
+cd ../wt-my-feature
+make dev-on    # write ~/.ccdb-dev-worktree and restart the bot
+# ... exercise the change on Discord ...
+make dev-off   # remove the marker and restart back onto the main tree
+make drift     # is the bot running the newest code on origin/main?
+```
+
+`make dev-on` writes the worktree path to `~/.ccdb-dev-worktree`; the import hook that
+`scripts/pre-start.sh` installs reads that marker and redirects `claude_discord` /
+`claude_code_core` imports to the worktree. `dev-on` / `dev-off` restart a systemd unit
+named `discord-bot` — adjust the Makefile if your deployment differs.
+
+**Nothing expires dev mode.** A forgotten `make dev-on` keeps a side branch in production
+indefinitely, while every merged PR *appears* to deploy and does not. `make drift`
+(`scripts/check-deploy-drift.sh`) answers that: it names the worktree and branch, says
+whether that commit is an ancestor of `origin/main`, counts how many merged commits are
+therefore not running, and reports how long dev mode has been on. It compares against the
+remote ref rather than a local `main`, which may itself be stale. `pre-start.sh` prints
+the same report on every boot.
+
+**Main-tree mode goes stale too.** Answering only the dev-worktree question and returning
+`OK` for everything else would be a guard that reports on the case it was written for and
+waves the rest through. The checkout is only pulled by `pre-start.sh`, so a bot that has
+not restarted keeps serving whatever was merged before it booted — and that is silent in
+exactly the same way: the tree says `main` and every `git pull` keeps succeeding. So
+`make drift` also compares the *running process* against `origin/main`. The honest measure
+is not "is the checkout behind" (a pull without a restart changes nothing) but "which
+commits landed after the bot started", taken from the service's `ActiveEnterTimestamp`;
+it then reports how long the **oldest** of those has been waiting, which is the length of
+the actual wait rather than the age of the newest commit. Because restarts are batched
+deliberately — an in-flight session does not survive one — it reports from day one but
+only fails past `CCDB_STALE_DAYS` (default `3`). A machine without systemd, or a unit it
+cannot read, says so rather than silently passing. `CCDB_SERVICE` overrides the unit name
+(default `discord-bot`).
+
+**Only commits a restart would actually change are counted.** A restart kills every
+in-flight session, so an alert that asks for one had better be worth it — and when it is
+not, the operator declines and the check stays red for days until nobody reads it. A
+commit that touches only `docs/`, `tests/`, `examples/`, `.github/`, `LICENSE` or a
+top-level `*.md` cannot change one bit of what the bot does, and neither can a Dependabot
+bump that changes only `uv.lock` and labels every updated dependency
+`dependency-type: direct:development`. Both are skipped, and the reported age comes from
+the oldest commit that *does* need a restart. Everything else counts, including a commit
+whose file list cannot be read: unclassifiable has to mean "counts", never "assume it is
+harmless".
+
+Exit codes: `0` running the newest code, or dev mode on already-merged code; `1` drift —
+dev mode on unmerged code, or merged commits undeployed past the threshold; `2` dev mode
+configured but unusable, the marker points nowhere (the hook silently falls back to the
+main tree).
+
+Before switching back, check `.env`: a value only your branch understands falls back to a
+default on the main tree, which changes behaviour without erroring.
+
 ## Code Style
 
 - **Formatter**: `ruff format`
 - **Linter**: `ruff check`
 - **Type hints**: Required on all function signatures
-- **Python**: 3.10+ (use `from __future__ import annotations` for modern syntax)
+- **Python**: 3.12+ (use `from __future__ import annotations` for modern syntax)
 
 ```bash
 uv run ruff check claude_discord/
 uv run ruff format claude_discord/
 ```
+
+## Creating Discord Threads
+
+Every `create_thread()` call must pass the shared auto-archive window:
+
+```python
+from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
+
+thread = await channel.create_thread(
+    name=name,
+    auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES,
+)
+```
+
+Discord fixes the window when the thread is created and defaults to a short one. An archived
+thread leaves the channel's thread list, so a conversation the user still considers open looks
+deleted. `tests/test_thread_policy.py` scans both `claude_discord/` and the example Cogs in
+`examples/ebibot/cogs/`, and fails when a call site omits the keyword or hardcodes a number
+instead of using the constant. The rule is about Discord's behaviour, not about which package the
+call lives in, so a custom Cog is held to it too.
+
+## Personal Detail Stays Out of Shipped Source
+
+This repository is public, and `examples/ebibot/` is a real instance's configuration — which makes
+it the place where personal detail leaks in. A docstring explaining *why* a Cog exists is the most
+natural thing in the world to write, and the natural way to write it is to name the person whose
+workflow it serves.
+
+`tests/test_no_personal_identifiers.py` scans `claude_discord/`, `claude_code_core/`,
+`claude_teams/` and `examples/`, and fails when shipped source names a real person. The check is
+deliberately narrow — names, not topics. A broad "no Japanese" rule, or a list of tools someone
+might use, produces false positives that get suppressed, and a suppressed guard is not a guard.
+
+When a feature genuinely needs one person's conventions, point at them from outside the repository
+rather than embedding them. `ThreadCompletionCog` is the reference pattern: the Cog keeps the
+generic half (batching, session and transcript resolution, the manifest) and reads the
+instance-specific instructions from the file named by `THREAD_COMPLETION_PROMPT_FILE`. An
+unreadable path falls back to a generic prompt rather than dropping the work.
 
 ## Project Structure
 

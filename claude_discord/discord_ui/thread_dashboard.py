@@ -9,7 +9,7 @@ When THREAD_INBOX_ENABLED is set, the dashboard also shows a persistent
 inbox section (📬) that survives bot restarts and surfaces threads where
 the user owes a reply.
 
-Issue: https://github.com/ebibibi/claude-code-discord-bridge/issues/67
+Issue: https://github.com/ebibibi/ebi-agent-chat-relay/issues/67
 """
 
 from __future__ import annotations
@@ -159,7 +159,7 @@ class ThreadStatusDashboard:
         if should_mention and thread is not None:
             try:
                 await thread.send(
-                    f"🟡 <@{self._owner_id}> Claude has finished — your reply is needed here."
+                    f"🟡 <@{self._owner_id}> The agent has finished — your reply is needed here."
                 )
             except (discord.HTTPException, RuntimeError):
                 logger.debug("Failed to send owner mention in thread %d", thread_id, exc_info=True)

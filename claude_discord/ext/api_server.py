@@ -18,6 +18,7 @@ import base64
 import binascii
 import contextlib
 import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -29,6 +30,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from aiohttp import web
 
@@ -36,9 +38,14 @@ from claude_code_core.thread_search import run_thread_search
 from claude_code_core.transcript_search import default_transcripts_root
 
 from ..discord_ui.file_sender import send_file_blobs
+from ..lounge import length_hint
 from ..relay import MODE_INTERRUPT, MODE_QUEUE, VALID_MODES, RelayGuard, build_relay_prompt
-from ..session_view import STATE_IDLE, STATE_RUNNING, build_session_views
-from . import ingest_manifest
+from ..session_view import STATE_HISTORY, STATE_RUNNING, build_session_views
+from ..thread_marker import MAX_THREAD_NAME_LENGTH, family_code
+from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
+from . import ingest_manifest, teams_sync
+from .teams_store import TeamsVaultStore
+from .teams_sync import ThreadRef
 
 if TYPE_CHECKING:
     import discord
@@ -46,6 +53,7 @@ if TYPE_CHECKING:
 
     from ..database.claims_repo import ClaimRepository
     from ..database.ingest_repo import IngestResultRepository
+    from ..database.lineage_repo import ThreadLineageRepository
     from ..database.lounge_repo import LoungeRepository
     from ..database.notification_repo import NotificationRepository
     from ..database.repository import SessionRepository
@@ -69,7 +77,7 @@ _MAX_INGEST_UNZIP_MEMBERS = 5000
 # single request from buffering an unbounded amount of base64 in memory.
 _MAX_SPAWN_ATTACHMENTS = 10
 _MAX_SPAWN_TOTAL_BYTES = 25 * 1024 * 1024
-_MAX_DISCORD_THREAD_NAME_LENGTH = 100
+_MAX_DISCORD_THREAD_NAME_LENGTH = MAX_THREAD_NAME_LENGTH
 
 # /api/sessions and /api/threads/{id}/messages — cross-session observability.
 # Bounded so one session peeking at another can never pull an unbounded amount
@@ -230,9 +238,18 @@ class ApiServer:
         ingest_repo: IngestResultRepository | None = None,
         summary_repo: ThreadSummaryRepository | None = None,
         claims_repo: ClaimRepository | None = None,
+        lineage_repo: ThreadLineageRepository | None = None,
         transcripts_path: str | None = None,
         ingest_require_complete: bool | None = None,
+        teams_vault_root: str | None = None,
     ) -> None:
+        if host.lower() != "localhost":
+            try:
+                local_bind = ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                local_bind = False
+            if not local_bind and not api_secret:
+                raise ValueError("A non-loopback control-plane bind requires an API secret")
         self.repo = repo
         self.bot = bot
         self.default_channel_id = default_channel_id
@@ -251,6 +268,7 @@ class ApiServer:
         self.ingest_repo = ingest_repo
         self.summary_repo = summary_repo
         self.claims_repo = claims_repo
+        self.lineage_repo = lineage_repo
         # Where Claude Code transcripts live, for /api/search?body=1. Falls back
         # to the standard ~/.claude/projects location so body search is
         # Zero-Config wherever Claude Code has run.
@@ -268,6 +286,10 @@ class ApiServer:
                 "yes",
             )
         self.ingest_require_complete = ingest_require_complete
+        # Where /api/teams/sync mirrors upstream threads. Defaults to
+        # {working_dir}/teams, beside the ingest tree; point it at a notes vault
+        # or anywhere else with CCDB_TEAMS_VAULT_ROOT.
+        self.teams_vault_root = teams_vault_root
         # Loop/rate brake for thread-to-thread relays. Process-local by design:
         # after a restart there are no in-flight relay chains to protect.
         self.relay_guard = RelayGuard()
@@ -286,6 +308,8 @@ class ApiServer:
         self._lounge_mirror_disabled = False
 
         self.app = web.Application(client_max_size=self.max_body_bytes)
+        if os.getenv("CCDB_CONTROL_PLANE_HOST_GUARD", "1").lower() not in ("0", "false", "no"):
+            self.app.middlewares.append(self._host_middleware)
         if self.api_secret:
             self.app.middlewares.append(self._auth_middleware)
         self._setup_routes()
@@ -333,6 +357,10 @@ class ApiServer:
         self.app.router.add_delete("/api/ingest/summary", self.delete_thread_summary)
         # Poll an ingest session's final result (requires ingest_repo)
         self.app.router.add_get("/api/ingest/{result_id}", self.get_ingest_result)
+        # Teams thread sync (have/want). Mirrors an upstream thread into the
+        # vault as one file per message; the client keeps no state of its own.
+        self.app.router.add_post("/api/teams/sync/plan", self.teams_sync_plan)
+        self.app.router.add_post("/api/teams/sync/push", self.teams_sync_push)
         # Startup resume routes
         self.app.router.add_post("/api/mark-resume", self.mark_resume)
 
@@ -354,7 +382,60 @@ class ApiServer:
         # untrusted external client.
         app.router.add_get("/api/ingest/summary", self.get_thread_summary)
         app.router.add_get("/api/ingest/{result_id}", self.get_ingest_result)
+        # The Teams sync pair is the browser extension's main surface, so it has
+        # to be reachable on the same listener as /api/ingest. Both handlers
+        # enforce the ingest token themselves and write only under the vault
+        # root, never spawning anything.
+        app.router.add_post("/api/teams/sync/plan", self.teams_sync_plan)
+        app.router.add_post("/api/teams/sync/push", self.teams_sync_push)
         return app
+
+    @web.middleware
+    async def _host_middleware(
+        self,
+        request: web.Request,
+        handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
+    ) -> web.StreamResponse:
+        """Refuse accidental proxying/rebinding of the privileged local app.
+
+        This is defense in depth: a proxy that strips every forwarding header
+        and rewrites Host can conceal itself. Never expose this app publicly.
+        Deliberate authenticated proxies must explicitly disable this guard.
+        """
+        try:
+            address = urlsplit("//" + request.headers.get("Host", ""))
+            host = address.hostname or ""
+            valid_port = address.port is None or 0 < address.port < 65536
+            local = host.lower() == "localhost" or ipaddress.ip_address(host).is_loopback
+            valid = (
+                local
+                and valid_port
+                and not (
+                    address.username
+                    or address.password
+                    or address.path
+                    or address.query
+                    or address.fragment
+                )
+            )
+            origin = request.headers.get("Origin")
+            if origin:
+                source = urlsplit(origin)
+                valid = (
+                    valid and source.scheme in ("http", "https") and source.netloc == address.netloc
+                )
+        except ValueError:
+            valid = False
+        if any(
+            name in request.headers
+            for name in ("Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto")
+        ):
+            valid = False
+        if not valid:
+            return web.json_response(
+                {"error": "Control plane accepts direct loopback requests only"}, status=403
+            )
+        return await handler(request)
 
     @web.middleware
     async def _auth_middleware(
@@ -427,10 +508,26 @@ class ApiServer:
             await self._ext_runner.cleanup()
 
     async def health(self, request: web.Request) -> web.Response:
-        """GET /api/health — health check."""
+        """GET /api/health — health check, including delivery backlog.
+
+        A scheduled notification that is stored but never sent used to be
+        undetectable from outside: create returned 201, the list endpoint
+        showed it, and only the human waiting for it ever found out.  The
+        backlog is therefore part of "healthy" — a row whose time has passed
+        and is still pending means the dispatcher is not draining the queue.
+        """
+        overdue = 0
+        try:
+            now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            overdue = len(await self.repo.get_pending(before=now))
+        except Exception:
+            # A liveness probe must answer even when the store is unreadable.
+            logger.exception("Health check could not read the notification backlog")
+
         return web.json_response(
             {
-                "status": "ok",
+                "status": "degraded" if overdue else "ok",
+                "overdue_notifications": overdue,
                 "timestamp": datetime.now().isoformat(),
             }
         )
@@ -493,7 +590,10 @@ class ApiServer:
         if thread_name:
             if not hasattr(raw_channel, "create_thread"):
                 return web.json_response({"error": "Channel does not support threads"}, status=400)
-            thread_result = await raw_channel.create_thread(name=thread_name)  # type: ignore[union-attr]
+            thread_result = await raw_channel.create_thread(  # type: ignore[union-attr]
+                name=thread_name,
+                auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES,
+            )
             # create_thread may return Thread or ThreadWithMessage depending on discord.py version
             thread = thread_result.thread if hasattr(thread_result, "thread") else thread_result  # type: ignore[union-attr]
             target = thread
@@ -826,17 +926,18 @@ class ApiServer:
         if self.lounge_channel_id:
             await self._send_lounge_to_discord(stored.label, stored.message, stored.posted_at)
 
-        return web.json_response(
-            {
-                "status": "posted",
-                "id": stored.id,
-                "label": stored.label,
-                "message": stored.message,
-                "thread_id": stored.thread_id,
-                "posted_at": stored.posted_at,
-            },
-            status=201,
-        )
+        payload: dict[str, Any] = {
+            "status": "posted",
+            "id": stored.id,
+            "label": stored.label,
+            "message": stored.message,
+            "thread_id": stored.thread_id,
+            "posted_at": stored.posted_at,
+        }
+        if hint := length_hint(stored.message):
+            payload["hint"] = hint
+
+        return web.json_response(payload, status=201)
 
     # ------------------------------------------------------------------
     # Session spawn endpoint (/api/spawn)
@@ -965,7 +1066,7 @@ class ApiServer:
             "created_at": getattr(claim, "created_at", None),
             "expires_at": getattr(claim, "expires_at", None),
             "holder_state": (
-                STATE_RUNNING if thread_id in self._running_thread_ids() else STATE_IDLE
+                STATE_RUNNING if thread_id in self._running_thread_ids() else STATE_HISTORY
             ),
             "holder_thread_name": self._thread_names({thread_id}).get(thread_id)
             if isinstance(thread_id, int)
@@ -1182,12 +1283,20 @@ class ApiServer:
 
         active = self._active_sessions()
         thread_ids = {r.thread_id for r in records} | {s.thread_id for s in active}
+        lineage = []
+        if self.lineage_repo is not None:
+            try:
+                lineage = await self.lineage_repo.list_all()
+            except Exception:
+                # Who is running is the answer; who spawned whom is the garnish.
+                logger.exception("Could not read spawn lineage")
         views = build_session_views(
             records=records,
             active=active,
             running_thread_ids=self._running_thread_ids(),
             lounge_messages=lounge_messages,
             thread_names=self._thread_names(thread_ids),
+            lineage=lineage,
         )
 
         if request.rel_url.query.get("state") == STATE_RUNNING:
@@ -1366,6 +1475,14 @@ class ApiServer:
                 (optional; defaults to ``true``).  When ``false``, only the
                 thread and seed message are created — a Claude session will
                 start when a user replies in the thread.
+            parent_thread_id: The calling thread (optional). Both titles then
+                carry that thread's family code — ``🤖K2`` on the child,
+                ``🌳K2`` on the parent — and the link is recorded so
+                ``GET /api/sessions`` can report it without parsing titles.
+            user_id: Discord user to add to the new thread (optional), so the
+                thread appears in their joined list instead of having to be
+                found in the channel. Mirrors what ``/api/ingest`` does for the
+                bot owner.
 
         Returns (201):
             ``{"status": "spawned", "thread_id": "...", "thread_name": "..."}``
@@ -1416,6 +1533,31 @@ class ApiServer:
         thread_name: str | None = data.get("thread_name") or None
         auto_start: bool = data.get("auto_start", True)
 
+        # Validated here rather than swallowed downstream: a typo'd user_id is a
+        # caller bug and should say so, while a Discord-side failure to add the
+        # member is only a visibility miss and must never fail the spawn.
+        raw_parent_id = data.get("parent_thread_id")
+        parent_thread_id: int | None = None
+        if raw_parent_id is not None:
+            try:
+                parent_thread_id = int(raw_parent_id)
+            except (TypeError, ValueError):
+                return web.json_response(
+                    {"error": "parent_thread_id must be an integer"}, status=400
+                )
+            if parent_thread_id <= 0:
+                return web.json_response({"error": "parent_thread_id must be positive"}, status=400)
+
+        raw_user_id = data.get("user_id")
+        invite_user_id: int | None = None
+        if raw_user_id is not None:
+            try:
+                invite_user_id = int(raw_user_id)
+            except (TypeError, ValueError):
+                return web.json_response({"error": "user_id must be an integer"}, status=400)
+            if invite_user_id <= 0:
+                return web.json_response({"error": "user_id must be positive"}, status=400)
+
         # Optional attachments to post into the new thread (e.g. files attached
         # to a Forgejo Issue forwarded by a watcher). Decoded here; posting is
         # handled inside spawn_session right after the seed prompt.
@@ -1430,20 +1572,35 @@ class ApiServer:
                 thread_name=thread_name,
                 auto_start=auto_start,
                 attachments=decoded_attachments or None,
+                invite_user_id=invite_user_id,
+                agent_spawned=True,
+                parent_thread_id=parent_thread_id,
             )
         except Exception as exc:
             logger.error("spawn_session failed: %s", exc, exc_info=True)
             return web.json_response({"error": str(exc)}, status=500)
 
+        # Recorded after the thread exists, and never allowed to undo it: the
+        # titles already carry the family code, so a failed write costs the
+        # queryable half of the lineage, not the visible one.
+        if parent_thread_id is not None and self.lineage_repo is not None:
+            try:
+                await self.lineage_repo.record(
+                    thread.id, parent_thread_id, family_code(parent_thread_id)
+                )
+            except Exception:
+                logger.exception("Could not record spawn lineage for thread %s", thread.id)
+
         logger.info("Spawned new Claude session in thread %s (%s)", thread.id, thread.name)
-        return web.json_response(
-            {
-                "status": "spawned",
-                "thread_id": str(thread.id),
-                "thread_name": thread.name,
-            },
-            status=201,
-        )
+        body: dict[str, str] = {
+            "status": "spawned",
+            "thread_id": str(thread.id),
+            "thread_name": thread.name,
+        }
+        if parent_thread_id is not None:
+            body["parent_thread_id"] = str(parent_thread_id)
+            body["family"] = family_code(parent_thread_id)
+        return web.json_response(body, status=201)
 
     # ------------------------------------------------------------------
     # Authenticated external ingest endpoint (/api/ingest)
@@ -1494,18 +1651,36 @@ class ApiServer:
         containment check happens before any filesystem access, and every
         candidate variant is re-checked because ``with_name`` takes a value
         derived from the same untrusted filename.
+
+        The check is written out here rather than delegated to
+        ``_contained_path``. The two are identical, but a guard that lives in a
+        helper does not propagate across the call boundary for static analysis:
+        with the delegated version CodeQL still reported both ``exists()`` calls
+        below as live path injections. Keeping the ``realpath`` + prefix test in
+        the same function as the filesystem call it protects makes the guarantee
+        local — to a reader and to the analyser alike.
         """
-        safe = self._contained_path(path)
-        if safe is None:
+        try:
+            root = os.path.realpath(str(self._ingest_root()))
+        except OSError:
             return None
-        if not safe.exists():
-            return safe
-        stem, suffix = safe.stem, safe.suffix
-        for n in range(2, 1000):
-            candidate = self._contained_path(safe.with_name(f"{stem}_{n}{suffix}"))
-            if candidate is not None and not candidate.exists():
-                return candidate
-        return self._contained_path(safe.with_name(f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"))
+
+        stem, suffix = path.stem, path.suffix
+        candidates = [path] + [path.with_name(f"{stem}_{n}{suffix}") for n in range(2, 1001)]
+        for candidate in candidates:
+            try:
+                resolved = os.path.realpath(str(candidate))
+            except OSError:
+                return None
+            # root + os.sep, not bare root: "/…/ingest-evil" has "/…/ingest" as
+            # a string prefix without being inside it.
+            if resolved != root and not resolved.startswith(root + os.sep):
+                return None
+            if not os.path.exists(resolved):
+                return Path(resolved)
+        # 1000 files of the same name in one request is not a real export; refuse
+        # it rather than inventing a random name nothing else can predict.
+        return None
 
     def _save_ingest_attachments(
         self, attachments: list[dict], thread_id: str
@@ -1593,6 +1768,17 @@ class ApiServer:
         Extraction is bounded (``_MAX_INGEST_UNZIP_*``) and refuses members that
         would escape the target directory (zip-slip). On any failure the zip is
         left untouched in the list so nothing is silently lost.
+
+        The original is deleted **only** when extraction actually produced
+        files. ``zipfile.is_zipfile()`` looks for the end-of-central-directory
+        signature near the end of a file; it does not require the file to start
+        like an archive. Any binary can end up containing a well-formed empty
+        EOCD by chance — Windows event logs (.evtx), dumps and captures are
+        exactly the large opaque blobs where that happens — and such a file was
+        "expanded" into nothing and then unlinked, destroying the attachment
+        while the count still read as a success. Replacing a file with nothing
+        is never an improvement, so if there is nothing to replace it with, it
+        stays.
         """
         result: list[Path] = []
         for path in saved_paths:
@@ -1600,8 +1786,15 @@ class ApiServer:
                 result.append(path)
                 continue
             extracted = self._safe_extract_zip(path)
-            if extracted is None:
-                # Extraction refused/failed — keep the zip so it isn't lost.
+            if not extracted:
+                # Refused, failed, or an "archive" with no members at all —
+                # almost certainly not a bundle. Keep the original.
+                if extracted is not None:
+                    logger.info(
+                        "Ingest attachment %s looks like a zip but holds no files — "
+                        "keeping it as-is",
+                        _sanitize_log(path),
+                    )
                 result.append(path)
                 continue
             result.extend(extracted)
@@ -2094,6 +2287,196 @@ class ApiServer:
         if not hmac.compare_digest(auth_header[7:], self.ingest_token):
             return web.json_response({"error": "Invalid token"}, status=401)
         return None
+
+    # ------------------------------------------------------------------
+    # Teams thread sync (/api/teams/sync) — raw messages, one file each
+    # ------------------------------------------------------------------
+
+    def _teams_store(self) -> TeamsVaultStore:
+        return TeamsVaultStore(self.teams_vault_root, working_dir=self.working_dir)
+
+    async def _read_teams_request(
+        self, request: web.Request, *, require_body: bool
+    ) -> tuple[tuple[ThreadRef, list, dict], None] | tuple[None, web.Response]:
+        """Auth + parse the shared body shape of both sync endpoints."""
+        if err := self._check_ingest_token(request):
+            return None, err
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return None, web.json_response({"error": "Invalid JSON"}, status=400)
+        try:
+            ref = teams_sync.parse_thread_ref(data.get("thread"))
+            messages = teams_sync.parse_messages(data.get("messages"), require_body=require_body)
+        except teams_sync.ValidationError as exc:
+            return None, web.json_response({"error": str(exc)}, status=400)
+        raw_coverage = data.get("coverage")
+        coverage: dict = {}
+        if isinstance(raw_coverage, dict):
+            oldest = str(raw_coverage.get("oldest_seen_mid") or "").strip()
+            if oldest.isdigit():
+                coverage["oldest_seen_mid"] = oldest
+            if raw_coverage.get("full_scan"):
+                # A full scan means nothing above is unexamined any more.
+                coverage["oldest_seen_mid"] = None
+                coverage["full_scan"] = True
+            raw_scan = raw_coverage.get("attachment_scan")
+            if isinstance(raw_scan, dict):
+                try:
+                    detected = int(raw_scan.get("detected", 0))
+                    ignored = int(raw_scan.get("ignored", 0))
+                except (TypeError, ValueError):
+                    detected = ignored = -1
+                if 0 <= ignored <= detected <= 100_000:
+                    coverage["attachment_scan"] = {
+                        "detected": detected,
+                        "ignored": ignored,
+                    }
+        return (ref, messages, coverage), None
+
+    async def teams_sync_plan(self, request: web.Request) -> web.Response:
+        """POST /api/teams/sync/plan — "what don't you have?".
+
+        The client sends the mid + content hash of every message it can see (no
+        bodies, so the request stays small) and gets back the subset the vault is
+        missing or holds at a different hash. Nothing is written here.
+
+        Answering from the files rather than from a stored marker is the point of
+        the whole design: the client keeps no sync state, so there is no state to
+        drift, and pressing the button twice is harmless.
+        """
+        parsed, err = await self._read_teams_request(request, require_body=False)
+        if err is not None:
+            return err
+        ref, messages, _coverage = parsed  # type: ignore[misc]
+
+        store = self._teams_store()
+        thread_dir = store.find_thread_dir(ref)
+        stored = store.load_stored(thread_dir) if thread_dir else {}
+        meta = store.read_meta(thread_dir) if thread_dir else {}
+        plan = teams_sync.build_plan(
+            messages,
+            stored,
+            pending=meta.get("pending_attachments") or [],
+            unavailable=meta.get("unavailable_attachments") or [],
+        )
+        return web.json_response(
+            {
+                "folder": str(thread_dir) if thread_dir else None,
+                "exists": thread_dir is not None,
+                "have": plan.have,
+                "want_messages": plan.want_messages,
+                "want_attachments": plan.want_attachments,
+                # The client uses this exactly like the old summary marker, to
+                # stop scrolling early. Its meaning is weaker on purpose: "this
+                # is stored raw", not "this was folded into a summary". Getting
+                # it wrong costs one extra sync, not a hole in the history.
+                "newest_have_mid": plan.newest_have_mid,
+                "pending": meta.get("pending_attachments") or [],
+                "unavailable": meta.get("unavailable_attachments") or [],
+                "attachment_summary": meta.get("attachment_summary")
+                or {
+                    "detected": 0,
+                    "saved": 0,
+                    "unavailable": 0,
+                    "ignored": 0,
+                    "pending": len(meta.get("pending_attachments") or []),
+                },
+                "message_count": int(meta.get("message_count") or len(stored)),
+                # What this server supports, so a client can tell it apart from
+                # an older one. `conversation_scope` is the permission a client
+                # needs before it may upload a partially-scrolled chat: against
+                # a server without it, each partial scan reports a different
+                # root mid and lands in its own folder.
+                "capabilities": {"conversation_scope": True},
+            }
+        )
+
+    async def teams_sync_push(self, request: web.Request) -> web.Response:
+        """POST /api/teams/sync/push — store the messages the plan asked for.
+
+        Writes one Markdown file per message, the attachment bytes beside it, and
+        one append-only line per message to ``chain.jsonl``. Re-sending a message
+        that has not changed is a no-op beyond a refreshed timestamp, so a client
+        that skips the plan step still converges — it just sends more.
+        """
+        parsed, err = await self._read_teams_request(request, require_body=True)
+        if err is not None:
+            return err
+        ref, messages, coverage = parsed  # type: ignore[misc]
+        if not messages:
+            return web.json_response({"error": "messages is empty"}, status=400)
+
+        store = self._teams_store()
+        try:
+            thread_dir = store.ensure_thread_dir(ref)
+        except (OSError, ValueError) as exc:
+            logger.error("Teams sync could not open a thread folder: %s", exc)
+            return web.json_response({"error": "Could not open the thread folder"}, status=500)
+
+        # `prev` links each message to the one before it in time. Known mids come
+        # from the chain; the batch's own mids join them so a first sync links up
+        # correctly too. mid is Unix-ms, so numeric order is chronological order.
+        known = sorted(
+            {int(m) for m in store.latest_chain(thread_dir)} | {int(m.mid) for m in messages}
+        )
+        ordered = sorted(messages, key=lambda m: int(m.mid))
+
+        created = updated = attachments_saved = 0
+        fresh_pending: list[dict] = []
+        fresh_unavailable: list[dict] = []
+        for msg in ordered:
+            position = known.index(int(msg.mid))
+            prev_mid = str(known[position - 1]) if position > 0 else None
+            try:
+                report = store.save_message(thread_dir, msg, ref, prev_mid=prev_mid)
+            except (OSError, ValueError) as exc:
+                logger.error("Teams sync failed to store a message: %s", exc)
+                return web.json_response({"error": "Could not store a message"}, status=500)
+            if report["action"] == "created":
+                created += 1
+            else:
+                updated += 1
+            attachments_saved += report["attachments_saved"]
+            fresh_pending.extend(report["pending"])
+            fresh_unavailable.extend(report["unavailable"])
+
+        unavailable = store.merge_unavailable(thread_dir, fresh_unavailable, pushed=ordered)
+        pending = store.merge_pending(
+            thread_dir,
+            fresh_pending,
+            pushed=ordered,
+            unavailable=unavailable,
+        )
+        meta = store.write_meta(
+            thread_dir,
+            ref,
+            pending=pending,
+            unavailable=unavailable,
+            coverage=coverage,
+        )
+        logger.info(
+            "Teams sync: %s (+%d new, %d updated, %d attachments, %d pending)",
+            _sanitize_log(thread_dir.name),
+            created,
+            updated,
+            attachments_saved,
+            len(pending),
+        )
+        return web.json_response(
+            {
+                "folder": str(thread_dir),
+                "created": created,
+                "updated": updated,
+                "attachments_saved": attachments_saved,
+                # Never reported as an empty success: whatever did not arrive is
+                # listed here, in thread.json and in the folder's README.
+                "pending": pending,
+                "unavailable": unavailable,
+                "attachment_summary": meta["attachment_summary"],
+                "message_count": meta["message_count"],
+            }
+        )
 
     @staticmethod
     def _valid_summary_key(value: object) -> str | None:

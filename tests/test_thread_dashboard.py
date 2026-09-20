@@ -1,6 +1,6 @@
 """Tests for the ThreadStatusDashboard — live session status embed.
 
-Issue: https://github.com/ebibibi/claude-code-discord-bridge/issues/67
+Issue: https://github.com/ebibibi/ebi-agent-chat-relay/issues/67
 """
 
 from __future__ import annotations
@@ -141,7 +141,7 @@ class TestOwnerMention:
 
         thread.send.assert_called_once()
         sent_text = thread.send.call_args.args[0]
-        assert "<@42>" in sent_text
+        assert sent_text == "🟡 <@42> The agent has finished — your reply is needed here."
 
     @pytest.mark.asyncio
     async def test_mention_not_sent_if_already_waiting(self) -> None:

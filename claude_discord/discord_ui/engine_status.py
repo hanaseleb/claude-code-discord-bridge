@@ -19,6 +19,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import shlex
 import time
 from collections.abc import Awaitable, Callable
@@ -36,6 +37,47 @@ _DEFAULT_TTL = 90.0
 # Failures (codex missing, not logged in) are cached for a shorter window so we
 # do not hammer a broken setup on every message, but still recover quickly.
 _FAIL_TTL = 30.0
+
+# Status-line labels. The bot's other surfaces are English, so deployments
+# outside Japan end up with one mixed-language line. `CCDB_STATUS_LANG=en`
+# switches just these labels; the default keeps the existing Japanese output so
+# no current deployment changes behaviour.
+#
+# "weekly" is a label, not a translation: `en` reports `7d`, which matches the
+# `5h` / `1d` / `30m` forms `_window_label()` already produces for every other
+# duration.
+_STATUS_LABELS: dict[str, dict[str, str]] = {
+    "ja": {
+        "weekly": "週次",
+        "credits": "クレジット",
+        "unlimited": "無制限",
+        "limit_reached": "上限到達",
+        "usage_unavailable": "残量取得失敗（codex login 済みか確認）",
+    },
+    "en": {
+        "weekly": "7d",
+        "credits": "credits",
+        "unlimited": "unlimited",
+        "limit_reached": "limit reached",
+        "usage_unavailable": "usage unavailable (check that codex is logged in)",
+    },
+}
+_DEFAULT_STATUS_LANG = "ja"
+
+
+def _labels() -> dict[str, str]:
+    """Return the status-line label set selected by ``CCDB_STATUS_LANG``.
+
+    An unset or unrecognised value falls back to the existing Japanese labels,
+    so a typo degrades to today's behaviour rather than to empty strings.
+    """
+    lang = os.getenv("CCDB_STATUS_LANG", _DEFAULT_STATUS_LANG).strip().lower()
+    return _STATUS_LABELS.get(lang, _STATUS_LABELS[_DEFAULT_STATUS_LANG])
+
+
+def codex_status_unavailable_line() -> str:
+    """The line shown when Codex usage cannot be read but the mode is ``on``."""
+    return f"\U0001f916 Codex: {_labels()['usage_unavailable']}"
 
 
 async def fetch_codex_rate_limits(
@@ -118,10 +160,40 @@ def _fmt_pct(snap: dict | None) -> str | None:
         return None
 
 
+def _window_label(window_duration_mins: object) -> str | None:
+    """Return a compact label derived from a rate-limit duration."""
+    if isinstance(window_duration_mins, bool) or not isinstance(window_duration_mins, (int, float)):
+        return None
+    if not float(window_duration_mins).is_integer():
+        return None
+
+    minutes = int(window_duration_mins)
+    if minutes <= 0:
+        return None
+    if minutes == 10080:
+        return _labels()["weekly"]
+    if minutes % 1440 == 0:
+        return f"{minutes // 1440}d"
+    if minutes % 60 == 0:
+        return f"{minutes // 60}h"
+    return f"{minutes}m"
+
+
+def _window_segment(snap: dict | None, fallback_label: str) -> str | None:
+    """Format one rate-limit window, retaining a legacy positional fallback."""
+    pct = _fmt_pct(snap)
+    if pct is None:
+        return None
+    duration = snap.get("windowDurationMins") if isinstance(snap, dict) else None
+    label = _window_label(duration) or fallback_label
+    return f"{label} {pct}"
+
+
 def format_codex_status_line(data: dict | None) -> str | None:
     """Format a ``account/rateLimits/read`` result into one Discord line.
 
-    Example: ``🤖 Codex: 5h 1% · 週次 8% · クレジット 0 (prolite)``.
+    Example: ``🤖 Codex: 5h 1% · 週次 8% · クレジット 0 (prolite)``, or with
+    ``CCDB_STATUS_LANG=en`` set, ``🤖 Codex: 5h 1% · 7d 8% · credits 0 (prolite)``.
     Returns ``None`` when there is nothing meaningful to show.
     """
     if not isinstance(data, dict):
@@ -130,20 +202,22 @@ def format_codex_status_line(data: dict | None) -> str | None:
     if not isinstance(snap, dict):
         return None
 
+    labels = _labels()
+
     segments: list[str] = []
-    primary = _fmt_pct(snap.get("primary"))
+    primary = _window_segment(snap.get("primary"), "5h")
     if primary is not None:
-        segments.append(f"5h {primary}")
-    secondary = _fmt_pct(snap.get("secondary"))
+        segments.append(primary)
+    secondary = _window_segment(snap.get("secondary"), labels["weekly"])
     if secondary is not None:
-        segments.append(f"週次 {secondary}")
+        segments.append(secondary)
 
     credit_info = snap.get("credits")
     if isinstance(credit_info, dict):
         if credit_info.get("unlimited"):
-            segments.append("クレジット 無制限")
+            segments.append(f"{labels['credits']} {labels['unlimited']}")
         elif credit_info.get("balance") is not None:
-            segments.append(f"クレジット {credit_info.get('balance')}")
+            segments.append(f"{labels['credits']} {credit_info.get('balance')}")
 
     if not segments:
         return None
@@ -151,7 +225,7 @@ def format_codex_status_line(data: dict | None) -> str | None:
     plan = snap.get("planType")
     suffix = f" ({plan})" if plan else ""
     reached = snap.get("rateLimitReachedType")
-    warn = " ⚠ 上限到達" if reached else ""
+    warn = f" ⚠ {labels['limit_reached']}" if reached else ""
     return f"\U0001f916 Codex: {' · '.join(segments)}{suffix}{warn}"
 
 

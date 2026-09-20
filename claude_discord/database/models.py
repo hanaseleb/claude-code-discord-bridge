@@ -97,6 +97,34 @@ CREATE TABLE IF NOT EXISTS resource_claims (
 );
 
 CREATE INDEX IF NOT EXISTS idx_resource_claims_thread ON resource_claims(thread_id);
+
+-- Where a ThreadKey actually lives. Every other table stores a conversation as
+-- a bare integer; for Discord that integer is the thread's snowflake and needs
+-- no translation, but a frontend whose ids are strings mints a surrogate here.
+-- A surrogate is a hash, and a hash does not run backwards — without this row
+-- a session could be looked up and still be unreplyable.
+CREATE TABLE IF NOT EXISTS frontend_threads (
+    thread_key INTEGER PRIMARY KEY,
+    frontend TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    parent_external_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE(frontend, external_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_frontend_threads_frontend ON frontend_threads(frontend);
+
+-- Which thread spawned which. Written at spawn time (before any session row
+-- exists, so an auto_start=false thread is not an orphan) and read back to
+-- answer "what did I start?" without parsing thread titles.
+CREATE TABLE IF NOT EXISTS thread_lineage (
+    thread_id INTEGER PRIMARY KEY,
+    parent_thread_id INTEGER NOT NULL,
+    family_code TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_thread_lineage_parent ON thread_lineage(parent_thread_id);
 """
 
 # Migrations for existing databases that lack new columns.
@@ -164,6 +192,15 @@ _MIGRATIONS = [
         "expires_at TEXT NOT NULL)"
     ),
     "CREATE INDEX IF NOT EXISTS idx_resource_claims_thread ON resource_claims(thread_id)",
+    # thread_lineage added in v4.1 — spawn parent/child links
+    (
+        "CREATE TABLE IF NOT EXISTS thread_lineage ("
+        "thread_id INTEGER PRIMARY KEY, "
+        "parent_thread_id INTEGER NOT NULL, "
+        "family_code TEXT NOT NULL, "
+        "created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')))"
+    ),
+    "CREATE INDEX IF NOT EXISTS idx_thread_lineage_parent ON thread_lineage(parent_thread_id)",
 ]
 
 
@@ -174,6 +211,9 @@ async def init_db(db_path: str) -> None:
     the migration statements add any missing columns idempotently.
     """
     async with aiosqlite.connect(db_path) as db:
+        # WAL lets readers continue using the last committed snapshot while a
+        # different connection holds a write transaction.
+        await db.execute("PRAGMA journal_mode=WAL")
         await db.executescript(SCHEMA)
         for stmt in _MIGRATIONS:
             with contextlib.suppress(Exception):

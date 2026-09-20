@@ -16,6 +16,7 @@ def _factory(**overrides: object) -> BackendFactory:
     defaults: dict[str, object] = {
         "claude_command": "claude",
         "codex_command": "codex",
+        "copilot_command": "copilot",
         "permission_mode": "acceptEdits",
         "working_dir": None,
         "timeout_seconds": 300,
@@ -36,6 +37,10 @@ class TestCodexDefaultModel:
     def test_default_model_for_claude_is_sonnet(self) -> None:
         assert _factory().default_model_for("claude") == "sonnet"
 
+    def test_default_model_for_copilot_is_none(self) -> None:
+        assert DEFAULT_MODEL["copilot"] is None
+        assert _factory().default_model_for("copilot") is None
+
     def test_build_codex_without_model_defers_to_cli(self) -> None:
         runner = _factory().build(backend="codex")
         assert isinstance(runner, CodexRunner)
@@ -47,6 +52,13 @@ class TestCodexDefaultModel:
         runner = _factory().build(backend="codex", model="gpt-5.5")
         assert isinstance(runner, CodexRunner)
         assert runner.model == "gpt-5.5"
+
+    def test_build_copilot_without_model_defers_to_cli(self) -> None:
+        runner = _factory().build(backend="copilot")
+        assert isinstance(runner, CodexRunner)
+        assert runner.command == "copilot"
+        assert runner.model is None
+        assert "--model" not in runner._build_args("hi", session_id=None)
 
 
 class TestEnvEffortDoesNotLeakToCodex:
@@ -61,3 +73,35 @@ class TestEnvEffortDoesNotLeakToCodex:
         runner = _factory(effort="max").build(backend="codex")
         assert isinstance(runner, CodexRunner)
         assert runner.effort is None
+
+
+class TestAppendSystemPromptReachesEveryCliBackend:
+    """The operator's standing instructions must not be silently Claude-only.
+
+    ``APPEND_SYSTEM_PROMPT`` used to reach the Claude runner alone. On Codex
+    the same text is `developer_instructions`, which lands as a `developer`
+    message ahead of the turn — so withholding it left `local` threads running
+    without the instructions the operator believed applied everywhere.
+    """
+
+    def test_forwarded_to_claude(self) -> None:
+        runner = _factory(append_system_prompt="be terse").build(backend="claude")
+        assert runner.append_system_prompt == "be terse"
+
+    def test_forwarded_to_codex(self) -> None:
+        runner = _factory(append_system_prompt="be terse").build(backend="codex")
+        assert isinstance(runner, CodexRunner)
+        assert runner.append_system_prompt == "be terse"
+
+    def test_forwarded_to_local(self) -> None:
+        runner = _factory(append_system_prompt="be terse").build(backend="local")
+        assert runner.append_system_prompt == "be terse"
+
+    def test_codex_renders_it_as_developer_instructions(self) -> None:
+        runner = _factory(append_system_prompt="be terse").build(backend="codex")
+        args = runner._build_args("hi", session_id=None)
+        assert any(arg.startswith("developer_instructions=") for arg in args)
+
+    def test_absent_when_unset(self) -> None:
+        args = _factory().build(backend="codex")._build_args("hi", session_id=None)
+        assert not any(arg.startswith("developer_instructions=") for arg in args)

@@ -17,6 +17,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import aiohttp
 import discord
 from discord.ext import commands
 
@@ -24,6 +25,7 @@ from ..cogs._run_helper import run_claude_with_config
 from ..cogs.headless_backend import build_headless_runner
 from ..cogs.run_config import RunConfig
 from ..concurrency import SessionRegistry
+from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 
 if TYPE_CHECKING:
     from claude_code_core.backend import SessionBackend
@@ -146,7 +148,10 @@ class WebhookTriggerCog(commands.Cog):
         trigger: WebhookTrigger,
     ) -> None:
         """Execute a matched trigger via Claude Code."""
-        thread = await message.create_thread(name=prefix[:100])
+        thread = await message.create_thread(
+            name=prefix[:100],
+            auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES,
+        )
 
         runner = await build_headless_runner(
             self.runner,
@@ -175,9 +180,14 @@ class WebhookTriggerCog(commands.Cog):
                 )
             )
 
-            if session_id:
-                await message.add_reaction("✅")
-            else:
-                await message.add_reaction("❌")
+            reaction = "✅" if session_id else "❌"
+            try:
+                await message.add_reaction(reaction)
+            except (discord.HTTPException, aiohttp.ClientError):
+                logger.debug("Discord client closed before completion reaction", exc_info=True)
+            except RuntimeError as exc:
+                if str(exc) != "Session is closed":
+                    raise
+                logger.debug("Discord session closed before completion reaction", exc_info=True)
         finally:
             self._active_count -= 1

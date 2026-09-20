@@ -55,6 +55,21 @@ class TestCreateBackend:
         backend = create_backend(backend="codex", model="o4-mini")
         assert isinstance(backend, CodexRunner)
 
+    def test_copilot_backend(self) -> None:
+        from claude_code_core.codex_runner import CodexRunner
+
+        backend = create_backend(backend="copilot", model="gpt-5.6-sol")
+        assert isinstance(backend, CodexRunner)
+
+    def test_agui_backend(self) -> None:
+        from claude_code_core.agui_backend import AgUiBackend
+
+        backend = create_backend(
+            backend="agui",
+            endpoint_url="https://agent.example/run",
+        )
+        assert isinstance(backend, AgUiBackend)
+
     def test_unknown_backend_raises(self) -> None:
         with pytest.raises(ValueError, match="Unknown backend"):
             create_backend(backend="unknown", model="sonnet")
