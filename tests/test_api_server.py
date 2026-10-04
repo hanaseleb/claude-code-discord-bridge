@@ -618,6 +618,60 @@ class TestSpawn:
         assert kwargs.get("thread_name") is None
 
     @pytest.mark.asyncio
+    async def test_spawn_pins_backend_and_model_on_the_new_thread(
+        self, spawn_client: TestClient, mock_cog: MagicMock
+    ) -> None:
+        resp = await spawn_client.post(
+            "/api/spawn",
+            json={"prompt": "Investigate", "backend": "codex", "model": "gpt-5"},
+        )
+        assert resp.status == 201
+        kwargs = mock_cog.spawn_session.call_args.kwargs
+        assert kwargs.get("backend") == "codex"
+        assert kwargs.get("model") == "gpt-5"
+
+    @pytest.mark.asyncio
+    async def test_spawn_echoes_backend_so_callers_can_detect_support(
+        self, spawn_client: TestClient, mock_cog: MagicMock
+    ) -> None:
+        # The key must be present even when no backend was asked for: that is how
+        # a client tells this server from an older one that ignores the field and
+        # would quietly spawn on the default backend.
+        resp = await spawn_client.post("/api/spawn", json={"prompt": "Investigate"})
+        data = await resp.json()
+        assert "backend" in data
+        assert data["backend"] is None
+
+    @pytest.mark.asyncio
+    async def test_spawn_normalises_backend_case(
+        self, spawn_client: TestClient, mock_cog: MagicMock
+    ) -> None:
+        await spawn_client.post("/api/spawn", json={"prompt": "x", "backend": " CODEX "})
+        assert mock_cog.spawn_session.call_args.kwargs.get("backend") == "codex"
+
+    @pytest.mark.asyncio
+    async def test_spawn_unknown_backend_returns_400(self, spawn_client: TestClient) -> None:
+        resp = await spawn_client.post("/api/spawn", json={"prompt": "x", "backend": "gpt"})
+        assert resp.status == 400
+        assert "backend" in (await resp.json())["error"]
+
+    @pytest.mark.asyncio
+    async def test_spawn_model_without_backend_returns_400(
+        self, spawn_client: TestClient
+    ) -> None:
+        resp = await spawn_client.post("/api/spawn", json={"prompt": "x", "model": "gpt-5"})
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_spawn_without_backend_passes_none(
+        self, spawn_client: TestClient, mock_cog: MagicMock
+    ) -> None:
+        await spawn_client.post("/api/spawn", json={"prompt": "x"})
+        kwargs = mock_cog.spawn_session.call_args.kwargs
+        assert kwargs.get("backend") is None
+        assert kwargs.get("model") is None
+
+    @pytest.mark.asyncio
     async def test_spawn_missing_prompt_returns_400(self, spawn_client: TestClient) -> None:
         resp = await spawn_client.post("/api/spawn", json={})
         assert resp.status == 400

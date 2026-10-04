@@ -257,6 +257,16 @@ curl -X POST "$CCDB_API_URL/api/spawn" \
 
 This is useful for notification-style workflows (e.g. daily briefings, CI alerts) where you want to display information upfront and let the user decide whether to engage Claude.
 
+**Choosing the backend (`backend`, `model`)** — Pin which CLI the new thread runs on. Without it the thread inherits the global default, and a caller cannot set the override itself because the thread does not exist yet when the call is made.
+
+```bash
+curl -X POST "$CCDB_API_URL/api/spawn" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Review this diff", "backend": "codex", "model": "gpt-5"}'
+```
+
+`backend` is one of `claude`, `codex`, `local`, `agui`, `zai`; `model` requires `backend`. The 201 response always echoes `"backend"` (null when not requested), so a client can tell a server that understands the field from an older one that would ignore it and spawn on the default.
+
 Claude subprocesses receive `DISCORD_THREAD_ID` as an environment variable, so a running session can spawn child sessions to parallelize work.
 
 ### Authenticated External Ingest with Result Retrieval (`/api/ingest`)

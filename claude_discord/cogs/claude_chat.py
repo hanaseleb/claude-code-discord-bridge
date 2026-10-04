@@ -815,6 +815,8 @@ class ClaudeChatCog(commands.Cog):
         auto_start: bool = True,
         result_sink: Callable[[str | None, str | None], Awaitable[None]] | None = None,
         attachments: list[tuple[str, bytes]] | None = None,
+        backend: str | None = None,
+        model: str | None = None,
     ) -> discord.Thread:
         """Create a new thread and optionally start a Claude Code session.
 
@@ -848,6 +850,12 @@ class ClaudeChatCog(commands.Cog):
                         seed prompt. Lets a programmatic caller (e.g. a Forgejo
                         Issue watcher via ``/api/spawn``) surface the original
                         attachments so they're viewable in the thread.
+            backend: Optional backend name ("claude", "codex", "zai", ...) to pin
+                        on the new thread. Without it the thread inherits the
+                        global/env default, so a caller that wants a specific CLI
+                        has no way to ask for one — the thread does not exist yet
+                        when the caller runs, so it cannot set the override itself.
+            model: Optional model for *backend*. Ignored unless backend is given.
 
         Returns:
             The newly created :class:`discord.Thread`.
@@ -858,6 +866,17 @@ class ClaudeChatCog(commands.Cog):
             type=discord.ChannelType.public_thread,
             auto_archive_duration=60,
         )
+        # Pin the backend before any session can start. ``_run_claude`` resolves
+        # the backend per thread at run time, so a thread-scoped override written
+        # here is what decides which CLI the spawned session uses. It must land
+        # before the seed message, because a human replying into the new thread
+        # could otherwise race the override and start the session on the default.
+        if backend:
+            if self._backend_settings is None:
+                raise RuntimeError("backend was requested but BackendSettings is not configured")
+            await self._backend_settings.set_backend(backend, thread_id=thread.id)
+            if model:
+                await self._backend_settings.set_model(backend, model, thread_id=thread.id)
         # Post the prompt so StatusManager has a Message to add reactions to.
         # Long prompts (e.g. an ingested Teams thread) exceed Discord's
         # per-message limit, so chunk the seed for display. The full prompt is

@@ -475,6 +475,88 @@ class TestSpawnSession:
         assert call_kwargs["type"] == discord.ChannelType.public_thread
 
     @pytest.mark.asyncio
+    async def test_spawn_pins_backend_before_the_session_starts(self) -> None:
+        """The thread-scoped backend override must be written before any send.
+
+        ``_run_claude`` resolves the backend per thread at run time, so the
+        override has to land before the seed message — a human replying into the
+        new thread could otherwise start the session on the default backend.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import discord
+
+        order: list[str] = []
+
+        thread = MagicMock(spec=discord.Thread)
+        thread.id = 42
+        thread.send = AsyncMock(side_effect=lambda *a, **k: order.append("send"))
+
+        channel = MagicMock()
+        channel.create_thread = AsyncMock(return_value=thread)
+
+        settings = MagicMock()
+        settings.set_backend = AsyncMock(side_effect=lambda *a, **k: order.append("set_backend"))
+        settings.set_model = AsyncMock(side_effect=lambda *a, **k: order.append("set_model"))
+
+        bot = MagicMock()
+        cog = ClaudeChatCog(
+            bot=bot, repo=MagicMock(), runner=MagicMock(), backend_settings=settings
+        )
+
+        with patch.object(cog, "_run_claude", new=AsyncMock()):
+            await cog.spawn_session(channel, "Do the thing", backend="codex", model="gpt-5")
+
+        settings.set_backend.assert_awaited_once_with("codex", thread_id=42)
+        settings.set_model.assert_awaited_once_with("codex", "gpt-5", thread_id=42)
+        assert order[0] == "set_backend"
+        assert order.index("set_backend") < order.index("send")
+
+    @pytest.mark.asyncio
+    async def test_spawn_without_backend_leaves_settings_untouched(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import discord
+
+        thread = MagicMock(spec=discord.Thread)
+        thread.id = 42
+        thread.send = AsyncMock()
+        channel = MagicMock()
+        channel.create_thread = AsyncMock(return_value=thread)
+
+        settings = MagicMock()
+        settings.set_backend = AsyncMock()
+
+        bot = MagicMock()
+        cog = ClaudeChatCog(
+            bot=bot, repo=MagicMock(), runner=MagicMock(), backend_settings=settings
+        )
+        with patch.object(cog, "_run_claude", new=AsyncMock()):
+            await cog.spawn_session(channel, "Do the thing")
+
+        settings.set_backend.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_spawn_backend_without_settings_raises(self) -> None:
+        """Fail loudly: silently spawning on the wrong backend is worse."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import discord
+
+        thread = MagicMock(spec=discord.Thread)
+        thread.id = 42
+        thread.send = AsyncMock()
+        channel = MagicMock()
+        channel.create_thread = AsyncMock(return_value=thread)
+
+        cog = ClaudeChatCog(bot=MagicMock(), repo=MagicMock(), runner=MagicMock())
+        with (
+            patch.object(cog, "_run_claude", new=AsyncMock()),
+            pytest.raises(RuntimeError, match="BackendSettings"),
+        ):
+            await cog.spawn_session(channel, "Do the thing", backend="codex")
+
+    @pytest.mark.asyncio
     async def test_spawn_uses_custom_thread_name(self) -> None:
         """thread_name overrides the default (prompt[:100])."""
         from unittest.mock import AsyncMock, MagicMock, patch

@@ -35,6 +35,7 @@ from aiohttp import web
 from claude_code_core.thread_search import run_thread_search
 from claude_code_core.transcript_search import default_transcripts_root
 
+from ..backend_settings import ALL_BACKENDS
 from ..discord_ui.file_sender import send_file_blobs
 from ..relay import MODE_INTERRUPT, MODE_QUEUE, VALID_MODES, RelayGuard, build_relay_prompt
 from ..session_view import STATE_HISTORY, STATE_RUNNING, build_session_views
@@ -1383,9 +1384,15 @@ class ApiServer:
                 (optional; defaults to ``true``).  When ``false``, only the
                 thread and seed message are created — a Claude session will
                 start when a user replies in the thread.
+            backend: Optional backend for the new thread — one of
+                ``ALL_BACKENDS``. Defaults to the global/env setting.
+            model: Optional model for *backend*. Requires ``backend``.
 
         Returns (201):
-            ``{"status": "spawned", "thread_id": "...", "thread_name": "..."}``
+            ``{"status": "spawned", "thread_id": "...", "thread_name": "...",
+            "backend": "codex" | null}``. ``backend`` is always present, so a
+            caller can tell a server that understands the field from an older
+            one that would silently ignore it and spawn on the default.
         """
         try:
             data = await request.json()
@@ -1433,6 +1440,15 @@ class ApiServer:
         thread_name: str | None = data.get("thread_name") or None
         auto_start: bool = data.get("auto_start", True)
 
+        backend: str | None = str(data.get("backend") or "").strip().lower() or None
+        if backend is not None and backend not in ALL_BACKENDS:
+            return web.json_response(
+                {"error": f"backend must be one of {', '.join(ALL_BACKENDS)}"}, status=400
+            )
+        model: str | None = str(data.get("model") or "").strip() or None
+        if model is not None and backend is None:
+            return web.json_response({"error": "model requires backend"}, status=400)
+
         # Optional attachments to post into the new thread (e.g. files attached
         # to a Forgejo Issue forwarded by a watcher). Decoded here; posting is
         # handled inside spawn_session right after the seed prompt.
@@ -1447,6 +1463,8 @@ class ApiServer:
                 thread_name=thread_name,
                 auto_start=auto_start,
                 attachments=decoded_attachments or None,
+                backend=backend,
+                model=model,
             )
         except Exception as exc:
             logger.error("spawn_session failed: %s", exc, exc_info=True)
@@ -1458,6 +1476,7 @@ class ApiServer:
                 "status": "spawned",
                 "thread_id": str(thread.id),
                 "thread_name": thread.name,
+                "backend": backend,
             },
             status=201,
         )
