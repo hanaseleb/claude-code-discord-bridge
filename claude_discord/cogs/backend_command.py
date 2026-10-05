@@ -79,6 +79,8 @@ SUGGESTED_MODELS: dict[str, list[tuple[str, str]]] = {
     # Z.ai serves the Anthropic-compatible GLM family. The model id is free-text,
     # so any id the Z.ai endpoint accepts works even if it is not listed here.
     "zai": [
+        ("glm-5.3", "GLM-5.3 (latest)"),
+        ("glm-5.3-flash", "GLM-5.3 Flash (fast, cheap)"),
         ("glm-5.2[1m]", "GLM-5.2 with 1M context"),
         ("glm-5.2", "GLM-5.2"),
         ("glm-5-turbo", "GLM-5 Turbo"),
