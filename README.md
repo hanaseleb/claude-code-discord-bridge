@@ -318,6 +318,16 @@ A `user_id` that is not a positive integer is a caller bug and is rejected with 
 
 **Telling agent-started threads apart (`🤖`)** — A spawned thread looks exactly like one a person opened by posting in the channel, and Discord offers no per-thread colour or badge, so the title is the only surface left. ccdb prepends a marker to the name the caller chose — `{"thread_name": "Nightly Triage"}` becomes **🤖 Nightly Triage** — which keeps the agent's own wording intact and still reads at a glance in the channel list. The marker is never applied twice, and it survives the 100-character limit (the tail is trimmed, not the head). Set `CCDB_SPAWN_THREAD_MARKER` to use a different marker, or to an empty string to turn it off. `/fork` and session resume are left alone: they carry their own prefixes (`🔀`, `▶`) and a human asked for them.
 
+**Choosing what the child costs (`backend`)** — a spawned session is work the agent gave itself, and it inherits the same backend the humans' own threads run on, which is usually the most expensive one available. Pass `backend` to run the child elsewhere, or set `CCDB_SPAWN_BACKEND` once to make every spawn default to it:
+
+```bash
+curl -X POST "$CCDB_API_URL/api/spawn" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Summarise the overnight CI failures", "backend": "zai"}'
+```
+
+The value is written as a thread-scoped `/backend` override before the first turn starts, so `/backend` in the thread still changes it afterwards and the global default is left alone. An unknown backend name is a caller bug and is rejected with 400 — never silently downgraded to the default.
+
 **Telling *whose* child it is (`parent_thread_id`)** — one marker is enough for one spawner; with several sessions fanning out at once the channel list becomes a pile of identical `🤖` titles and the tree is gone. Pass the calling thread and both ends get the same two-character **family code**, derived from that thread's ID (never allocated, so anyone holding the ID can recompute it):
 
 ```bash
@@ -1118,6 +1128,7 @@ for idle deadlines, attachment retries, credentials and startup rollback.
 | `CCDB_ERROR_THREAD_MARKER` | Marker prepended when a turn ends in an error. Removed on the next human reply. Set to an empty string to disable | `⚠️` |
 | `CCDB_SCHEDULED_THREAD_MARKER` | Marker prepended to a thread while a scheduled task is waiting to post into it (removed when it fires, or the task is disabled or deleted). Set to an empty string to disable | `⏰` |
 | `CCDB_WAIT_CWD_ROOTS` | Directories a wait probe's `cwd` must sit under (`os.pathsep`-separated, checked after `realpath`) | relay user's home |
+| `CCDB_SPAWN_BACKEND` | Backend pinned on every thread opened by `POST /api/spawn` (`claude`/`codex`/`local`/`agui`/`pi`/`zai`). Unset means a spawned child inherits the deployment's current `/backend`, like any other thread; a per-call `backend` in the request body always wins | (optional) |
 | `THREAD_INBOX_ENABLED` | Enable the persistent thread inbox (classifies sessions as `waiting`/`done`/`ambiguous` via `claude -p`; shown in thread dashboard) | `false` |
 | `THREAD_AUTO_RENAME` | Auto-rename new thread titles using Claude AI — generates a short, descriptive title from the first user message via a background `claude -p` call (never delays session start), and re-titles the thread later when its subject has clearly moved on (rate-limited to one rename per 15 minutes; lineage tags are preserved) | `false` |
 | `CCDB_ACCOUNT_POOLS_FILE` | Path to a TOML file listing pre-logged-in Claude Code / Codex profile directories per backend and the strategy that picks one per session or turn. Validated at startup; unset keeps one implicit login per backend. See [Account Pools](docs/account-pools.md) | (optional) |
@@ -1413,7 +1424,7 @@ uv sync --extra api
 | GET | `/api/tasks` | List registered tasks |
 | DELETE | `/api/tasks/{id}` | Remove a task |
 | PATCH | `/api/tasks/{id}` | Update a task (enable/disable, change schedule, pin backend/model) |
-| POST | `/api/spawn` | Create a new Discord thread and start a Claude Code session (non-blocking); pass `auto_start: false` to defer Claude until the first user reply, or `user_id` to add the requester to the thread |
+| POST | `/api/spawn` | Create a new Discord thread and start a Claude Code session (non-blocking); pass `auto_start: false` to defer Claude until the first user reply, `user_id` to add the requester to the thread, or `backend` to choose which CLI the child runs on |
 | POST | `/api/ingest` | Authenticated external spawn (browser extension / webhook) with base64 attachments; returns a `result_id` when result retrieval is configured |
 | GET | `/api/ingest/{result_id}` | Poll the spawned session's final reply (`status`/`result`/`error`/`thread_id`) |
 | GET | `/api/ingest/summary` | Read the running summary + `marker` for a long ingest thread by `key` (ingest-token gated) so the client can export only the diff |
