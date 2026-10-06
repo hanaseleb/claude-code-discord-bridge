@@ -936,6 +936,7 @@ class ClaudeChatCog(commands.Cog):
         invite_user_id: int | None = None,
         agent_spawned: bool = False,
         parent_thread_id: int | None = None,
+        backend: str | None = None,
     ) -> discord.Thread:
         """Create a new thread and optionally start a Claude Code session.
 
@@ -986,6 +987,12 @@ class ClaudeChatCog(commands.Cog):
                         markers into readable trees. Best-effort in every
                         respect: an unreachable or unrenameable parent costs the
                         cross-link, never the spawn.
+            backend: Backend to pin on the new thread (``claude``/``zai``/…).
+                        Written as a thread-scoped ``/backend`` override before
+                        the first turn starts, so a caller that fans work out to
+                        child sessions can choose what they cost without
+                        touching the global default every other thread reads.
+                        ``None`` keeps the normal thread > global > env order.
 
         Returns:
             The newly created :class:`discord.Thread`.
@@ -1001,6 +1008,10 @@ class ClaudeChatCog(commands.Cog):
             type=discord.ChannelType.public_thread,
             auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES,
         )
+        # Pinned before anything can run a turn: _run_claude resolves the
+        # backend from this override, and the session starts further down.
+        if backend and self._backend_settings is not None:
+            await self._backend_settings.set_backend(backend, thread_id=thread.id)
         # Added before the seed message so the requester sees the thread from its
         # first line, not after Claude has already been talking to itself.
         if invite_user_id:

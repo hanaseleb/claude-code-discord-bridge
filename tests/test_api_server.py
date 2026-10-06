@@ -622,6 +622,78 @@ class TestSpawn:
         assert mock_cog.spawn_session.await_args.kwargs["invite_user_id"] == 418192003549888523
 
     @pytest.mark.asyncio
+    async def test_spawn_defaults_to_the_configured_spawn_backend(
+        self, repo: NotificationRepository, bot_with_text_channel: MagicMock, mock_cog: MagicMock
+    ) -> None:
+        """CCDB_SPAWN_BACKEND is what makes fan-out cheap; dropping it is silent."""
+        bot_with_text_channel.cogs = {"ClaudeChatCog": mock_cog}
+        api = ApiServer(
+            repo=repo,
+            bot=bot_with_text_channel,
+            default_channel_id=12345,
+            spawn_backend="zai",
+        )
+        client = TestClient(TestServer(api.app))
+        await client.start_server()
+        try:
+            resp = await client.post("/api/spawn", json={"prompt": "Check the backlog"})
+            assert resp.status == 201
+            assert (await resp.json())["backend"] == "zai"
+        finally:
+            await client.close()
+        assert mock_cog.spawn_session.await_args.kwargs["backend"] == "zai"
+
+    @pytest.mark.asyncio
+    async def test_spawn_backend_in_the_body_wins_over_the_default(
+        self, repo: NotificationRepository, bot_with_text_channel: MagicMock, mock_cog: MagicMock
+    ) -> None:
+        """A caller that needs the expensive backend for one child must be able to say so."""
+        bot_with_text_channel.cogs = {"ClaudeChatCog": mock_cog}
+        api = ApiServer(
+            repo=repo,
+            bot=bot_with_text_channel,
+            default_channel_id=12345,
+            spawn_backend="zai",
+        )
+        client = TestClient(TestServer(api.app))
+        await client.start_server()
+        try:
+            resp = await client.post(
+                "/api/spawn", json={"prompt": "Check the backlog", "backend": "claude"}
+            )
+            assert resp.status == 201
+        finally:
+            await client.close()
+        assert mock_cog.spawn_session.await_args.kwargs["backend"] == "claude"
+
+    @pytest.mark.asyncio
+    async def test_spawn_rejects_an_unknown_backend(
+        self, spawn_client: TestClient, mock_cog: MagicMock
+    ) -> None:
+        """A typo'd backend is a caller bug — never a silent fallback to the default."""
+        resp = await spawn_client.post("/api/spawn", json={"prompt": "Hello", "backend": "gpt-5"})
+        assert resp.status == 400
+        mock_cog.spawn_session.assert_not_awaited()
+
+    def test_spawn_backend_is_read_from_the_environment(
+        self,
+        repo: NotificationRepository,
+        bot_with_text_channel: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Env sets the default; an unknown name degrades to 'inherit', never to a guess."""
+
+        def server(**kw: object) -> ApiServer:
+            return ApiServer(repo=repo, bot=bot_with_text_channel, default_channel_id=1, **kw)  # type: ignore[arg-type]
+
+        monkeypatch.setenv("CCDB_SPAWN_BACKEND", "zai")
+        assert server().spawn_backend == "zai"
+        monkeypatch.setenv("CCDB_SPAWN_BACKEND", "gpt-5")
+        assert server().spawn_backend is None
+        monkeypatch.delenv("CCDB_SPAWN_BACKEND")
+        assert server().spawn_backend is None
+
+    @pytest.mark.asyncio
     async def test_spawn_marks_the_thread_as_agent_spawned(
         self, spawn_client: TestClient, mock_cog: MagicMock
     ) -> None:

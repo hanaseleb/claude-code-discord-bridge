@@ -476,6 +476,56 @@ class TestSpawnSession:
         assert call_kwargs["type"] == discord.ChannelType.public_thread
 
     @pytest.mark.asyncio
+    async def test_spawn_pins_the_requested_backend_on_the_new_thread(self) -> None:
+        """The pin has to land before the first turn, or the child runs on the wrong CLI."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import discord
+
+        thread = MagicMock(spec=discord.Thread)
+        thread.id = 42
+        thread.send = AsyncMock()
+
+        channel = MagicMock()
+        channel.create_thread = AsyncMock(return_value=thread)
+
+        settings = MagicMock()
+        settings.set_backend = AsyncMock()
+        cog = ClaudeChatCog(
+            bot=MagicMock(), repo=MagicMock(), runner=MagicMock(), backend_settings=settings
+        )
+
+        with patch.object(cog, "_run_claude", new=AsyncMock()):
+            await cog.spawn_session(channel, "Do the thing", backend="zai")
+
+        settings.set_backend.assert_awaited_once_with("zai", thread_id=42)
+
+    @pytest.mark.asyncio
+    async def test_spawn_without_a_backend_leaves_the_thread_inheriting(self) -> None:
+        """No backend asked for means no override written — /backend keeps resolving normally."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import discord
+
+        thread = MagicMock(spec=discord.Thread)
+        thread.id = 42
+        thread.send = AsyncMock()
+
+        channel = MagicMock()
+        channel.create_thread = AsyncMock(return_value=thread)
+
+        settings = MagicMock()
+        settings.set_backend = AsyncMock()
+        cog = ClaudeChatCog(
+            bot=MagicMock(), repo=MagicMock(), runner=MagicMock(), backend_settings=settings
+        )
+
+        with patch.object(cog, "_run_claude", new=AsyncMock()):
+            await cog.spawn_session(channel, "Do the thing")
+
+        settings.set_backend.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_spawn_adds_invited_user_to_thread(self) -> None:
         """invite_user_id makes the requester a thread member, before the seed message."""
         from unittest.mock import AsyncMock, MagicMock, patch

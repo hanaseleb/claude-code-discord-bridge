@@ -37,6 +37,7 @@ from aiohttp import web
 from claude_code_core.thread_search import run_thread_search
 from claude_code_core.transcript_search import default_transcripts_root
 
+from ..backend_settings import ALL_BACKENDS
 from ..discord_ui.file_sender import send_file_blobs
 from ..lounge import length_hint
 from ..relay import MODE_INTERRUPT, MODE_QUEUE, VALID_MODES, RelayGuard, build_relay_prompt
@@ -242,6 +243,7 @@ class ApiServer:
         transcripts_path: str | None = None,
         ingest_require_complete: bool | None = None,
         teams_vault_root: str | None = None,
+        spawn_backend: str | None = None,
     ) -> None:
         if host.lower() != "localhost":
             try:
@@ -286,6 +288,21 @@ class ApiServer:
                 "yes",
             )
         self.ingest_require_complete = ingest_require_complete
+        # Which backend a /api/spawn child runs on when the caller names none.
+        # Unset keeps the normal thread > global > env resolution, i.e. the
+        # child inherits whatever /backend the deployment already defaults to;
+        # CCDB_SPAWN_BACKEND=zai sends fan-out work to the cheap backend while
+        # the humans' own threads stay on the expensive one.
+        if spawn_backend is None:
+            spawn_backend = os.getenv("CCDB_SPAWN_BACKEND", "").strip().lower() or None
+        if spawn_backend is not None and spawn_backend not in ALL_BACKENDS:
+            logger.warning(
+                "Ignoring unknown spawn backend %r (expected one of %s)",
+                spawn_backend,
+                ", ".join(ALL_BACKENDS),
+            )
+            spawn_backend = None
+        self.spawn_backend = spawn_backend
         # Where /api/teams/sync mirrors upstream threads. Defaults to
         # {working_dir}/teams, beside the ingest tree; point it at a notes vault
         # or anywhere else with CCDB_TEAMS_VAULT_ROOT.
@@ -1483,6 +1500,10 @@ class ApiServer:
                 thread appears in their joined list instead of having to be
                 found in the channel. Mirrors what ``/api/ingest`` does for the
                 bot owner.
+            backend: Backend for the new thread (optional) — one of
+                ``claude``/``codex``/``local``/``agui``/``pi``/``zai``. Defaults
+                to ``CCDB_SPAWN_BACKEND``, and with that unset the child simply
+                inherits the deployment's current ``/backend``.
 
         Returns (201):
             ``{"status": "spawned", "thread_id": "...", "thread_name": "..."}``
@@ -1558,6 +1579,18 @@ class ApiServer:
             if invite_user_id <= 0:
                 return web.json_response({"error": "user_id must be positive"}, status=400)
 
+        raw_backend = data.get("backend")
+        backend: str | None = None
+        if raw_backend is not None:
+            backend = str(raw_backend).strip().lower()
+            if backend not in ALL_BACKENDS:
+                return web.json_response(
+                    {"error": f"backend must be one of: {', '.join(ALL_BACKENDS)}"},
+                    status=400,
+                )
+        else:
+            backend = self.spawn_backend
+
         # Optional attachments to post into the new thread (e.g. files attached
         # to a Forgejo Issue forwarded by a watcher). Decoded here; posting is
         # handled inside spawn_session right after the seed prompt.
@@ -1575,6 +1608,7 @@ class ApiServer:
                 invite_user_id=invite_user_id,
                 agent_spawned=True,
                 parent_thread_id=parent_thread_id,
+                backend=backend,
             )
         except Exception as exc:
             logger.error("spawn_session failed: %s", exc, exc_info=True)
@@ -1597,6 +1631,8 @@ class ApiServer:
             "thread_id": str(thread.id),
             "thread_name": thread.name,
         }
+        if backend is not None:
+            body["backend"] = backend
         if parent_thread_id is not None:
             body["parent_thread_id"] = str(parent_thread_id)
             body["family"] = family_code(parent_thread_id)
