@@ -66,10 +66,12 @@ def test_parse_new_event_type():
     assert event is not None
     assert event.message_type == MessageType.ASSISTANT
 
+
 def test_parse_new_event_type_missing_data():
     line = '{"type":"new_type"}'
     event = parse_line(line)
     assert event is not None  # Should handle gracefully
+
 
 # THEN implement in claude_discord/claude/parser.py
 ```
@@ -80,17 +82,21 @@ def test_parse_new_event_type_missing_data():
 # tests/test_new_cog.py — Write THIS first
 from unittest.mock import AsyncMock, MagicMock
 
+
 def test_rejects_unauthorized_user():
     cog = MyCog(bot=MagicMock(), allowed_user_ids={111})
     assert cog._is_authorized(999) is False
+
 
 def test_accepts_authorized_user():
     cog = MyCog(bot=MagicMock(), allowed_user_ids={111})
     assert cog._is_authorized(111) is True
 
+
 def test_validates_input_format():
     # Test that invalid input is rejected before reaching CLI
     assert not re.match(r"^[\w-]+$", "invalid; rm -rf /")
+
 
 # THEN implement in claude_discord/cogs/my_cog.py
 ```
@@ -106,10 +112,12 @@ def test_chunk_with_nested_code_blocks():
     for chunk in chunks:
         assert chunk.count("```") % 2 == 0  # Even number = balanced
 
+
 def test_chunk_unicode_content():
     text = "日本語テスト 🎉" * 500
     chunks = chunk_message(text)
     assert all(len(c.encode("utf-8")) <= 8000 for c in chunks)
+
 
 # THEN implement the fix in claude_discord/discord_ui/chunker.py
 ```
@@ -123,6 +131,7 @@ def test_session_id_with_uppercase_rejected():
     runner = ClaudeRunner()
     with pytest.raises(ValueError):
         runner._build_args("hello", session_id="ABC-DEF")
+
 
 # Confirm the test FAILS with current code
 # THEN fix the regex in runner.py
@@ -139,14 +148,14 @@ async def test_save_overwrites_existing(repo):
     result = await repo.get_session_id(thread_id=123)
     assert result == "new-id"
 
+
 async def test_concurrent_saves(repo):
     import asyncio
-    tasks = [
-        repo.save(thread_id=i, session_id=f"session-{i}")
-        for i in range(100)
-    ]
+
+    tasks = [repo.save(thread_id=i, session_id=f"session-{i}") for i in range(100)]
     await asyncio.gather(*tasks)
     # All should succeed without errors
+
 
 # THEN implement or verify in claude_discord/database/repository.py
 ```

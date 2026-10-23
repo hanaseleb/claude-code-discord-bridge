@@ -77,6 +77,7 @@ tests/
 @dataclass
 class RunConfig:
     """Configuration for a single Claude Code execution."""
+
     thread: discord.Thread
     runner: ClaudeRunner
     prompt: str
@@ -192,10 +193,12 @@ def thread() -> MagicMock:
     msg.edit = AsyncMock()
     return t
 
+
 @pytest.fixture
 def make_event() -> Callable[..., StreamEvent]:
     """Factory for creating test StreamEvents."""
     ...
+
 
 @pytest.fixture
 def mock_runner() -> MagicMock:

@@ -20,6 +20,7 @@ Coding standards and Pythonic patterns for claude-code-discord-bridge developmen
 ```python
 from __future__ import annotations  # Required in EVERY file
 
+
 # Good: Full type annotations
 async def run_claude_in_thread(
     thread: discord.Thread,
@@ -27,31 +28,32 @@ async def run_claude_in_thread(
     repo: SessionRepository,
     prompt: str,
     session_id: str | None,
-) -> str | None:
-    ...
+) -> str | None: ...
+
 
 # Bad: Missing annotations
-async def run_claude_in_thread(thread, runner, repo, prompt, session_id):
-    ...
+async def run_claude_in_thread(thread, runner, repo, prompt, session_id): ...
 ```
 
 ### Union Types (3.12+ Syntax)
 
 ```python
 # Good: Modern syntax
-def process(value: str | None) -> dict[str, list[int]]:
-    ...
+def process(value: str | None) -> dict[str, list[int]]: ...
+
 
 # Bad: Old-style typing
 from typing import Optional, Dict, List
-def process(value: Optional[str]) -> Dict[str, List[int]]:
-    ...
+
+
+def process(value: Optional[str]) -> Dict[str, List[int]]: ...
 ```
 
 ### Dataclasses for State
 
 ```python
 from dataclasses import dataclass, field
+
 
 @dataclass
 class SessionState:
@@ -83,6 +85,7 @@ except Exception:
 
 ```python
 import logging
+
 logger = logging.getLogger(__name__)
 
 # Good

@@ -46,6 +46,7 @@ def test_parse_system_message():
     assert event.message_type == MessageType.SYSTEM
     assert event.session_id == "abc-123"
 
+
 def test_parse_invalid_json():
     event = parse_line("not json")
     assert event is None
@@ -59,6 +60,7 @@ async def repo(tmp_path):
     db_path = str(tmp_path / "test.db")
     await init_db(db_path)
     return SessionRepository(db_path)
+
 
 async def test_save_and_get(repo):
     await repo.save(thread_id=123, session_id="abc-def")
@@ -77,14 +79,17 @@ def test_build_args_basic():
     assert "--" in args
     assert args[-1] == "hello"
 
+
 def test_build_args_rejects_invalid_session():
     runner = ClaudeRunner()
     with pytest.raises(ValueError):
         runner._build_args("hello", session_id="'; DROP TABLE --")
 
+
 def test_env_strips_secrets():
     runner = ClaudeRunner()
     import os
+
     os.environ["DISCORD_BOT_TOKEN"] = "test-token"
     env = runner._build_env()
     assert "DISCORD_BOT_TOKEN" not in env
@@ -94,6 +99,7 @@ def test_env_strips_secrets():
 
 ```python
 from unittest.mock import AsyncMock, MagicMock
+
 
 def make_mock_interaction(user_id: int = 12345) -> MagicMock:
     interaction = MagicMock()
@@ -110,10 +116,12 @@ def make_mock_interaction(user_id: int = 12345) -> MagicMock:
 def test_chunk_empty_string():
     assert chunk_message("") == []
 
+
 def test_chunk_preserves_code_blocks():
     text = "```python\nprint('hello')\n```"
     chunks = chunk_message(text)
     assert len(chunks) == 1
+
 
 def test_chunk_splits_at_boundary():
     long_text = "a" * 3000

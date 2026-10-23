@@ -558,6 +558,7 @@ Chaque fichier `.py` du répertoire doit exposer un `async def setup(bot, runner
 ```python
 from discord.ext import commands
 
+
 class GreeterCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -566,6 +567,7 @@ class GreeterCog(commands.Cog):
     async def on_member_join(self, member):
         channel = self.bot.get_channel(self.bot.channel_id)
         await channel.send(f"Welcome {member.mention}!")
+
 
 async def setup(bot, runner, components):
     await bot.add_cog(GreeterCog(bot))
@@ -617,6 +619,7 @@ runner = ClaudeRunner(
     working_dir="/path/to/your/project",
 )
 
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
@@ -626,6 +629,7 @@ async def on_ready():
         claude_channel_id=int(os.environ["DISCORD_CHANNEL_ID"]),
         allowed_user_ids={int(os.environ["DISCORD_OWNER_ID"])},
     )
+
 
 asyncio.run(bot.start(os.environ["DISCORD_BOT_TOKEN"]))
 ```
@@ -644,7 +648,9 @@ Pour déployer le bot sur plusieurs canaux Discord, passez `claude_channel_ids` 
 await setup_bridge(
     bot,
     runner,
-    claude_channel_id=int(os.environ["DISCORD_CHANNEL_ID"]),   # primary (fallback for thread creation)
+    claude_channel_id=int(
+        os.environ["DISCORD_CHANNEL_ID"]
+    ),  # primary (fallback for thread creation)
     claude_channel_ids={
         int(os.environ["DISCORD_CHANNEL_ID"]),
         int(os.environ["DISCORD_CHANNEL_ID_2"]),
@@ -868,12 +874,14 @@ triggers = {
     ),
 }
 
-await bot.add_cog(WebhookTriggerCog(
-    bot=bot,
-    runner=runner,
-    triggers=triggers,
-    channel_ids={YOUR_CHANNEL_ID},
-))
+await bot.add_cog(
+    WebhookTriggerCog(
+        bot=bot,
+        runner=runner,
+        triggers=triggers,
+        channel_ids={YOUR_CHANNEL_ID},
+    )
+)
 ```
 
 **Sécurité :** Les prompts sont définis côté serveur. Les webhooks ne font que sélectionner quel déclencheur activer — pas d'injection de prompt arbitraire.
@@ -942,7 +950,7 @@ config = UpgradeConfig(
     trigger_prefix="🔄 bot-upgrade",
     working_dir="/home/user/my-bot",
     restart_command=["sudo", "systemctl", "restart", "my-bot.service"],
-    restart_approval=True,       # React ✅ in thread, or click button in channel
+    restart_approval=True,  # React ✅ in thread, or click button in channel
     slash_command_enabled=True,  # Enable /upgrade slash command (opt-in, default False)
 )
 
