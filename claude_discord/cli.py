@@ -3,6 +3,7 @@
 Usage:
     ccdb setup   — interactive wizard: creates .env from prompts
     ccdb start   — start the bot (reads .env)
+    ccdb api     — call the REST control plane (replaces raw curl)
     ccdb         — show help
 
 Install via:
@@ -17,6 +18,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+from claude_discord import cli_api
 
 # aiohttp is an optional dependency ([api] extra) but is already present in the
 # dev environment and widely installed.  We import lazily so that the core
@@ -398,6 +401,9 @@ def main() -> None:
         help="Directory containing custom Cog files to load",
     )
 
+    # api — REST control-plane wrapper (replaces raw curl for agent sessions)
+    cli_api.add_api_subparser(sub)
+
     args = parser.parse_args()
 
     if args.command == "setup":
@@ -407,6 +413,8 @@ def main() -> None:
         if cogs_dir:
             os.environ["CUSTOM_COGS_DIR"] = cogs_dir
         cmd_start(Path(args.env))
+    elif args.command == "api":
+        sys.exit(cli_api.dispatch(args))
     else:
         parser.print_help()
         sys.exit(0)
