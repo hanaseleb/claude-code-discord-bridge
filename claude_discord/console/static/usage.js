@@ -94,21 +94,21 @@
     const signIn = window.consoleCliLogin ? window.consoleCliLogin.chips() : [];
     strip.hidden = backends.length === 0 && signIn.length === 0;
     const blocks = backends.map(backendBlock);
+    // A phone folds the strip to the default backend; sign-in chips stay, they need action.
     const def = window.ConsoleBackend && window.ConsoleBackend.defaultBackend();
-    const mine = backends.filter((b) => b.backend === def).length;
-    const total = blocks.length + signIn.length;
-    if (narrow.matches && total > mine) {
-      const toggle = el("button", "u-toggle", open ? "▴" : `+${total - mine} ▾`);
+    const others = backends.filter((b) => b.backend !== def).length;
+    const fold = narrow.matches && others > 0;
+    strip.classList.toggle("folded", fold && !open);
+    if (fold) {
+      const toggle = el("button", "u-toggle", open ? "▴" : `+${others} ▾`);
       toggle.type = "button";
       toggle.title = open ? L.less : L.more;
       toggle.setAttribute("aria-label", toggle.title);
       toggle.setAttribute("aria-expanded", String(open));
       toggle.onclick = () => { open = !open; render(); };
-      const shown = open ? [...blocks, ...signIn] : blocks.filter((_, i) => backends[i].backend === def);
-      strip.classList.toggle("folded", !open);
-      strip.replaceChildren(...shown, toggle);
+      const shown = open ? blocks : blocks.filter((_, i) => backends[i].backend === def);
+      strip.replaceChildren(...shown, ...signIn, toggle);
     } else {
-      strip.classList.remove("folded");
       strip.replaceChildren(...blocks, ...signIn);
     }
     // Narrow screens overlay the nav and detail panes; they start below the strip.
