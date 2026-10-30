@@ -49,4 +49,6 @@ body > .app { flex: 1 1 0; min-height: 0; height: auto; }
   .usage { flex-wrap: wrap; gap: 4px 6px; padding: 4px 8px; }
   .u-be { gap: 2px 6px; padding: 1px 7px; flex-wrap: wrap; max-width: 100%; }
   .u-bar { width: 28px; }
+  .u-toggle { font: inherit; font-size: 12px; padding: 1px 8px; border-radius: 5px; border: 1px solid var(--line);
+    background: var(--raise); color: var(--dim); cursor: pointer; margin-left: auto; }
 }
