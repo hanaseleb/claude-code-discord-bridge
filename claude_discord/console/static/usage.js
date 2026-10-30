@@ -105,8 +105,10 @@
       toggle.setAttribute("aria-expanded", String(open));
       toggle.onclick = () => { open = !open; render(); };
       const shown = open ? [...blocks, ...signIn] : blocks.filter((_, i) => backends[i].backend === def);
+      strip.classList.toggle("folded", !open);
       strip.replaceChildren(...shown, toggle);
     } else {
+      strip.classList.remove("folded");
       strip.replaceChildren(...blocks, ...signIn);
     }
     // Narrow screens overlay the nav and detail panes; they start below the strip.
